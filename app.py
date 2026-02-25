@@ -1220,7 +1220,7 @@ def format_naver_keyword_report(nk_raw: pd.DataFrame) -> pd.DataFrame:
     nk = nk_raw.copy()
 
     # 숫자화
-    for c in ["impCnt","clkCnt","ccnt","salesAmt","avgRnk"]:
+    for c in ["impCnt","clkCnt","ccnt","salesAmt","convAmt","avgRnk"]:
         if c in nk.columns:
             nk[c] = pd.to_numeric(nk[c], errors="coerce").fillna(0)
 
@@ -1248,8 +1248,9 @@ def format_naver_keyword_report(nk_raw: pd.DataFrame) -> pd.DataFrame:
     out["노출 수"] = nk.get("impCnt", 0).astype(int)
     out["클릭 수"] = nk.get("clkCnt", 0).astype(int)
 
-    # 총 비용: salesAmt (광고비)
-    out["총 비용"] = nk.get("salesAmt", 0).apply(round_half_up_int)
+    # 총 비용: convAmt (실제 광고비, VAT제외)
+    cost_col = "convAmt" if "convAmt" in nk.columns and nk["convAmt"].sum() > nk.get("salesAmt", pd.Series([0])).sum() else "salesAmt"
+    out["총 비용"] = pd.to_numeric(nk.get(cost_col, 0), errors="coerce").fillna(0).apply(round_half_up_int)
 
     # AD+AD_CONVERSION 머지 후 ccnt로 가입전환수 사용
     out["가입"] = pd.to_numeric(nk.get("ccnt", 0), errors="coerce").fillna(0).astype(int)
