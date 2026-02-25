@@ -503,33 +503,41 @@ def get_n_keyword_data_report(d_from, d_to, report_tp="AD", logs=None) -> pd.Dat
             if df_ad is None:
                 continue
 
-            # ✅ 브랜드검색 캠페인 행 제거 (캠페인 ID에 -a001-04- 포함된 행)
+            # ✅ BS 캠페인 행 제거
             before = len(df_ad)
             df_ad = df_ad[~df_ad["campaignId"].astype(str).str.contains("-a001-04-", na=False)].reset_index(drop=True)
             if len(df_ad) < before:
                 logs.append(f"[NAVER] BS 캠페인 행 제거: {before}→{len(df_ad)} day={day}")
 
-            # AD_CONVERSION 머지 (EXPKEYWORD는 ccnt 이미 포함되어 있으므로 스킵)
+            # ✅ adId 집계를 먼저! (ccnt 머지 전에 해야 중복 방지)
+            if "keywordId" in df_ad.columns:
+                grp_cols = [c for c in ["statDt","customerId","campaignId","adgroupId","keywordId","pcMblTp","campaignName","adgroupName","keywordName"] if c in df_ad.columns]
+                sum_cols = [c for c in ["impCnt","clkCnt","salesAmt"] if c in df_ad.columns]
+                agg_dict = {c: "sum" for c in sum_cols}
+                if "avgRnk" in df_ad.columns:
+                    agg_dict["avgRnk"] = "mean"
+                if "bidAmt" in df_ad.columns:
+                    agg_dict["bidAmt"] = "first"
+                df_ad = df_ad.groupby(grp_cols, as_index=False).agg(agg_dict)
+
+            # ✅ AD_CONVERSION 머지 (집계 후에 ccnt 붙이기)
             if report_tp != "EXPKEYWORD":
                 df_conv = _fetch_naver_report_day(acc, day, "AD_CONVERSION", camp_map, grp_map, kw_map, logs)
             else:
                 df_conv = None
+
             if df_conv is not None and "ccnt" in df_conv.columns:
-                # ✅ BS 캠페인 제거
                 df_conv = df_conv[~df_conv["campaignId"].astype(str).str.contains("-a001-04-", na=False)]
 
-                # ✅ keywordId 있는 행: keywordId+pcMblTp 머지
                 conv_kw = df_conv[df_conv["keywordId"].astype(str).str.strip() != "-"]
                 conv_kw_agg = conv_kw.groupby(["keywordId","pcMblTp"], as_index=False)["ccnt"].sum()
                 df_ad = df_ad.merge(conv_kw_agg, on=["keywordId","pcMblTp"], how="left")
                 df_ad["ccnt"] = df_ad["ccnt"].fillna(0)
 
-                # ✅ keywordId="-" 행: adgroupId+pcMblTp 기준으로 머지 (그룹 단위 전환)
                 conv_grp = df_conv[df_conv["keywordId"].astype(str).str.strip() == "-"]
                 if not conv_grp.empty:
                     conv_grp_agg = conv_grp.groupby(["adgroupId","pcMblTp"], as_index=False)["ccnt"].sum().rename(columns={"ccnt":"ccnt_grp"})
                     df_ad = df_ad.merge(conv_grp_agg, on=["adgroupId","pcMblTp"], how="left")
-                    # '-' 키워드 행에만 적용 (keywordId='-'인 행)
                     mask = df_ad["keywordId"].astype(str).str.strip() == "-"
                     df_ad.loc[mask, "ccnt"] = df_ad.loc[mask, "ccnt_grp"].fillna(0)
                     df_ad.drop(columns=["ccnt_grp"], inplace=True)
@@ -548,39 +556,16 @@ def get_n_keyword_data_report(d_from, d_to, report_tp="AD", logs=None) -> pd.Dat
     if result.empty:
         return result
 
-    # ✅ keywordId+pcMblTp 기준으로 집계 (adId별 중복행 합산)
+    # 중복 제거 (날짜별 집계는 루프 내에서 이미 완료)
+    dedup_cols = ["statDt","campaignId","adgroupId","keywordName","pcMblTp"]
     if "keywordId" in result.columns:
-        group_cols = ["statDt","customerId","campaignId","adgroupId","keywordId","pcMblTp",
-                      "campaignName","adgroupName","keywordName"]
-        sum_cols = [c for c in ["impCnt","clkCnt","salesAmt","ccnt"] if c in result.columns]
-        avg_cols = [c for c in ["avgRnk"] if c in result.columns]
-        first_cols = [c for c in ["bidAmt","convAmt","bsnId","adId"] if c in result.columns]
-
-        group_cols = [c for c in group_cols if c in result.columns]
-        agg_dict = {c: "sum" for c in sum_cols}
-        agg_dict.update({c: "mean" for c in avg_cols})
-        agg_dict.update({c: "first" for c in first_cols})
-
-        before = len(result)
-        result = result.groupby(group_cols, as_index=False).agg(agg_dict)
-        after = len(result)
-        if before != after:
-            logs.append(f"[NAVER] 집계(adId 합산): {before}행 → {after}행")
-    else:
-        # EXPKEYWORD: keywordName 기준 집계
-        group_cols = ["statDt","customerId","campaignId","adgroupId","keywordName","pcMblTp",
-                      "campaignName","adgroupName"]
-        group_cols = [c for c in group_cols if c in result.columns]
-        sum_cols = [c for c in ["impCnt","clkCnt","salesAmt","ccnt"] if c in result.columns]
-        avg_cols = [c for c in ["avgRnk"] if c in result.columns]
-        agg_dict = {c: "sum" for c in sum_cols}
-        agg_dict.update({c: "mean" for c in avg_cols})
-
-        before = len(result)
-        result = result.groupby(group_cols, as_index=False).agg(agg_dict)
-        after = len(result)
-        if before != after:
-            logs.append(f"[NAVER] 집계: {before}행 → {after}행")
+        dedup_cols = ["statDt","campaignId","adgroupId","keywordId","pcMblTp"]
+    existing_dedup = [c for c in dedup_cols if c in result.columns]
+    before = len(result)
+    result = result.drop_duplicates(subset=existing_dedup).reset_index(drop=True)
+    after = len(result)
+    if before != after:
+        logs.append(f"[NAVER] 중복 제거: {before}행 → {after}행")
 
     return result
 
