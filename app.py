@@ -366,9 +366,11 @@ def naver_build_name_maps(acc, exclude_bs=False):
     # 캠페인 id->name
     camps = naver_list_campaigns(acc)
 
-    # ✅ 키워드 리포트 시 브검 캠페인 제외
+    # ✅ 키워드 리포트 시 브검 캠페인 제외 (이름 또는 ID 패턴으로 필터)
     if exclude_bs:
-        camps = [c for c in camps if "_BS_" not in str(c.get("name", ""))]
+        camps = [c for c in camps
+                 if "_BS_" not in str(c.get("name", ""))
+                 and "-a001-04-" not in str(c.get("nccCampaignId", ""))]
 
     camp_map = {c.get("nccCampaignId"): c.get("name") for c in camps if c.get("nccCampaignId")}
 
@@ -500,6 +502,12 @@ def get_n_keyword_data_report(d_from, d_to, report_tp="AD", logs=None) -> pd.Dat
             df_ad = _fetch_naver_report_day(acc, day, "AD", camp_map, grp_map, kw_map, logs)
             if df_ad is None:
                 continue
+
+            # ✅ 브랜드검색 캠페인 행 제거 (캠페인 ID에 -a001-04- 포함된 행)
+            before = len(df_ad)
+            df_ad = df_ad[~df_ad["campaignId"].astype(str).str.contains("-a001-04-", na=False)].reset_index(drop=True)
+            if len(df_ad) < before:
+                logs.append(f"[NAVER] BS 캠페인 행 제거: {before}→{len(df_ad)} day={day}")
 
             # AD_CONVERSION 리포트 (전환수) - 실패해도 AD만으로 진행
             df_conv = _fetch_naver_report_day(acc, day, "AD_CONVERSION", camp_map, grp_map, kw_map, logs)
@@ -1345,6 +1353,7 @@ def run_keyword_report(platform, d1, d2):
                         logs.append(f"[진단] unique 키워드 수: {nk_raw['keywordName'].nunique()}")
                     if "ccnt" in nk_raw.columns:
                         logs.append(f"[진단] ccnt>0 행: {(nk_raw['ccnt'] > 0).sum()} / {len(nk_raw)}")
+                logs.append(f"[진단] ccnt 합계: {int(nk_raw['ccnt'].sum())}")
                     nk_out = format_naver_keyword_report(nk_raw)
                     logs.append(f"Naver keywords(formatted): {len(nk_out)}행")
                     out_dfs.append(nk_out)
@@ -1897,8 +1906,11 @@ _r = preset_range("어제")
 if "daily_d1" not in st.session_state: st.session_state.daily_d1 = datetime.strptime(_r[0][:10], "%Y-%m-%d").date()
 if "daily_d2" not in st.session_state: st.session_state.daily_d2 = datetime.strptime(_r[1][:10], "%Y-%m-%d").date()
 _kr = preset_range("주간(월~일)")
-if "kw_d1" not in st.session_state: st.session_state.kw_d1 = datetime.strptime(_kr[0][:10], "%Y-%m-%d").date()
-if "kw_d2" not in st.session_state: st.session_state.kw_d2 = datetime.strptime(_kr[1][:10], "%Y-%m-%d").date()
+if "daily_log" not in st.session_state: st.session_state.daily_log = ""
+if "daily_fname" not in st.session_state: st.session_state.daily_fname = None
+if "kw_log" not in st.session_state: st.session_state.kw_log = ""
+if "kw_detail_log" not in st.session_state: st.session_state.kw_detail_log = ""
+if "kw_fname" not in st.session_state: st.session_state.kw_fname = None
 
 # =====================================================
 # 1행: 데일리(좌) / 키워드(우)
@@ -1925,9 +1937,9 @@ with col_daily:
 
     col_d1, col_d2 = st.columns(2)
     with col_d1:
-        d1 = st.date_input("시작일", value=st.session_state.daily_d1, key="daily_d1")
+        d1 = st.date_input("시작일", key="daily_d1")
     with col_d2:
-        d2 = st.date_input("종료일", value=st.session_state.daily_d2, key="daily_d2")
+        d2 = st.date_input("종료일", key="daily_d2")
 
     tabula_file = st.file_uploader("📎 타뷸라 raw 파일 업로드 (선택, CSV or XLSX)",
                                    type=["csv","xlsx"], key="tabula_upload")
@@ -1946,16 +1958,21 @@ with col_daily:
             log_msg, fname, saved, plat = run_all(
                 platform, str(d1), str(d2), tabula_path
             )
-
-        st.text_area("상태/로그", log_msg, height=180)
-
+        st.session_state.daily_log = log_msg
         if fname and os.path.exists(fname):
             st.session_state.saved_path     = fname
             st.session_state.saved_platform = plat
-            with open(fname, "rb") as f:
-                st.download_button("📥 통합 엑셀 다운로드", f, file_name=os.path.basename(fname),
-                                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                   key="dl_daily")
+            st.session_state.daily_fname    = fname
+
+    if st.session_state.daily_log:
+        st.text_area("상태/로그", st.session_state.daily_log, height=180, key="daily_log_display")
+
+    if st.session_state.daily_fname and os.path.exists(st.session_state.daily_fname):
+        with open(st.session_state.daily_fname, "rb") as f:
+            st.download_button("📥 통합 엑셀 다운로드", f,
+                               file_name=os.path.basename(st.session_state.daily_fname),
+                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                               key="dl_daily")
 
 # ── 우상: 키워드 성과 ─────────────────────────────────────
 with col_kw:
@@ -1977,24 +1994,30 @@ with col_kw:
 
     col_k1, col_k2 = st.columns(2)
     with col_k1:
-        kw_d1 = st.date_input("시작일", value=st.session_state.kw_d1, key="kw_d1")
+        kw_d1 = st.date_input("시작일", key="kw_d1")
     with col_k2:
-        kw_d2 = st.date_input("종료일", value=st.session_state.kw_d2, key="kw_d2")
+        kw_d2 = st.date_input("종료일", key="kw_d2")
 
     if st.button("키워드 성과 엑셀 생성", type="primary", key="btn_kw"):
         with st.spinner("키워드 데이터 수집 중..."):
             kw_summary, kw_detail, kw_fname = run_keyword_report(kw_platform, str(kw_d1), str(kw_d2))
-
-        st.text_area("상태(요약)", kw_summary, height=120)
-        with st.expander("상세 로그 보기"):
-            st.text(kw_detail)
-
+        st.session_state.kw_log = kw_summary
+        st.session_state.kw_detail_log = kw_detail
         if kw_fname and os.path.exists(kw_fname):
-            with open(kw_fname, "rb") as f:
-                st.download_button("📥 키워드 성과 다운로드", f,
-                                   file_name=os.path.basename(kw_fname),
-                                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                   key="dl_kw")
+            st.session_state.kw_fname = kw_fname
+
+    if st.session_state.kw_log:
+        st.text_area("상태(요약)", st.session_state.kw_log, height=120, key="kw_log_display")
+    if st.session_state.kw_detail_log:
+        with st.expander("상세 로그 보기"):
+            st.text(st.session_state.kw_detail_log)
+
+    if st.session_state.kw_fname and os.path.exists(st.session_state.kw_fname):
+        with open(st.session_state.kw_fname, "rb") as f:
+            st.download_button("📥 키워드 성과 다운로드", f,
+                               file_name=os.path.basename(st.session_state.kw_fname),
+                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                               key="dl_kw")
 
 st.divider()
 
