@@ -512,17 +512,25 @@ def get_n_keyword_data_report(d_from, d_to, report_tp="AD", logs=None) -> pd.Dat
             # AD_CONVERSION 리포트 (전환수) - 실패해도 AD만으로 진행
             df_conv = _fetch_naver_report_day(acc, day, "AD_CONVERSION", camp_map, grp_map, kw_map, logs)
             if df_conv is not None and "ccnt" in df_conv.columns:
-                # ✅ 머지 전 진단
-                logs.append(f"[진단] AD pcMblTp 값: {df_ad['pcMblTp'].unique().tolist()}")
-                logs.append(f"[진단] CONV pcMblTp 값: {df_conv['pcMblTp'].unique().tolist()}")
-                logs.append(f"[진단] CONV keywordId 샘플: {df_conv['keywordId'].head(3).tolist()}")
-                logs.append(f"[진단] AD keywordId 샘플: {df_ad['keywordId'].head(3).tolist()}")
+                # ✅ BS 캠페인 제거
+                df_conv = df_conv[~df_conv["campaignId"].astype(str).str.contains("-a001-04-", na=False)]
 
-                # keywordId + pcMblTp 기준으로 ccnt 머지
-                conv_cols = ["keywordId", "pcMblTp", "ccnt"]
-                conv_agg = df_conv[conv_cols].groupby(["keywordId", "pcMblTp"], as_index=False)["ccnt"].sum()
-                df_ad = df_ad.merge(conv_agg, on=["keywordId", "pcMblTp"], how="left")
+                # ✅ keywordId 있는 행: keywordId+pcMblTp 머지
+                conv_kw = df_conv[df_conv["keywordId"].astype(str).str.strip() != "-"]
+                conv_kw_agg = conv_kw.groupby(["keywordId","pcMblTp"], as_index=False)["ccnt"].sum()
+                df_ad = df_ad.merge(conv_kw_agg, on=["keywordId","pcMblTp"], how="left")
                 df_ad["ccnt"] = df_ad["ccnt"].fillna(0)
+
+                # ✅ keywordId="-" 행: adgroupId+pcMblTp 기준으로 머지 (그룹 단위 전환)
+                conv_grp = df_conv[df_conv["keywordId"].astype(str).str.strip() == "-"]
+                if not conv_grp.empty:
+                    conv_grp_agg = conv_grp.groupby(["adgroupId","pcMblTp"], as_index=False)["ccnt"].sum().rename(columns={"ccnt":"ccnt_grp"})
+                    df_ad = df_ad.merge(conv_grp_agg, on=["adgroupId","pcMblTp"], how="left")
+                    # '-' 키워드 행에만 적용 (keywordId='-'인 행)
+                    mask = df_ad["keywordId"].astype(str).str.strip() == "-"
+                    df_ad.loc[mask, "ccnt"] = df_ad.loc[mask, "ccnt_grp"].fillna(0)
+                    df_ad.drop(columns=["ccnt_grp"], inplace=True)
+
                 logs.append(f"[NAVER] AD+CONVERSION 머지 완료 day={day}")
             else:
                 df_ad["ccnt"] = 0
@@ -606,6 +614,9 @@ def _fetch_naver_report_day(acc, day, report_tp, camp_map, grp_map, kw_map, logs
         if report_tp == "AD_CONVERSION":
             head3 = "\n".join(txt.splitlines()[:3])
             logs.append(f"[NAVER] AD_CONVERSION raw:\n{head3}")
+        if report_tp == "AD":
+            head2 = "\n".join(txt.splitlines()[:2])
+            logs.append(f"[NAVER] AD raw 샘플:\n{head2}")
 
         if report_tp == "AD":
             base_cols = [
