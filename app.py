@@ -1135,10 +1135,6 @@ def run_all(platform, d_f, d_t, tabula_file=None):
 
 # =========================================================
 # ✅ 8) 키워드 성과 리포트 (Google + Naver)
-# - Naver는 stat-reports -> out 형태로 변환
-# =========================================================
-# =========================================================
-# ✅ 키워드 리포트 최종 컬럼 (너가 준 스키마)
 # =========================================================
 KW_FINAL_COLS = [
     "월","주간","매체","매체 구분","캠페인 유형","캠페인","그룹","키워드","기기",
@@ -1146,12 +1142,6 @@ KW_FINAL_COLS = [
 ]
 
 def _month_week_from_dt(dt_series: pd.Series):
-    """
-    dt_series: datetime64 시리즈
-    return: (월_str_series, 주간_int_series)
-    월 포맷: 'YYYY. MM'
-    주간: ISO week number
-    """
     dt = pd.to_datetime(dt_series, errors="coerce")
     iso = dt.dt.isocalendar()
     month = dt.dt.year.astype("Int64").astype(str) + ". " + dt.dt.month.astype("Int64").astype(str).str.zfill(2)
@@ -1159,7 +1149,6 @@ def _month_week_from_dt(dt_series: pd.Series):
     return month, week
 
 def infer_device_from_campaign_name_any(cname: str) -> str:
-    # 네가 말한대로 "캠페인 명 보고" PC/MO 구분
     s = str(cname or "")
     if s.endswith("_PC") or s.endswith("PC") or "_PC_" in s:
         return "PC"
@@ -1167,20 +1156,12 @@ def infer_device_from_campaign_name_any(cname: str) -> str:
         return "모바일"
     return "전체"
 
-# ---------------------------------------------------------
-# ✅ NAVER EXPKEYWORD 파싱 (탭구분 + 헤더없음)
-# 로그에 찍힌 RAW 한 줄(12개 필드) 기준으로 컬럼을 잡는다.
-# ---------------------------------------------------------
 NAVER_EXPKEYWORD_COLS = [
     "statDt", "customerId", "campaignId", "adgroupId", "keywordName",
     "bidAmt", "pcMblTp", "impCnt", "clkCnt", "ccnt", "salesAmt", "avgRnk"
 ]
 
 def _parse_naver_expkeyword_txt(txt: str) -> pd.DataFrame:
-    """
-    네이버 EXPKEYWORD 다운로드 RAW는 탭(\t)으로 구분되는 경우가 많음.
-    """
-    # 빈줄 제거
     lines = [ln for ln in txt.splitlines() if str(ln).strip()]
     if not lines:
         return pd.DataFrame(columns=NAVER_EXPKEYWORD_COLS)
@@ -1199,7 +1180,6 @@ def _parse_naver_expkeyword_txt(txt: str) -> pd.DataFrame:
     return df
 
 def _naver_pc_mo_from_raw(pcMblTp: str) -> str:
-    # RAW에는 P/M 로 오는 케이스가 있어서 보조로 사용
     s = str(pcMblTp or "").upper().strip()
     if s in ("P", "PC"):
         return "PC"
@@ -1208,23 +1188,12 @@ def _naver_pc_mo_from_raw(pcMblTp: str) -> str:
     return ""
 
 def format_naver_keyword_report(nk_raw: pd.DataFrame) -> pd.DataFrame:
-    """
-    ✅ 너가 원하는 규칙 적용:
-    - 월/주간: statDt 기준으로 '행별' 계산
-    - 매체 구분: SA 고정
-    - 기기: 캠페인명으로 추정 (안되면 RAW pcMblTp 보조)
-    - 평균노출순위: 네이버 값 사용
-    - 광고비(마크업포함,VAT포함): 네이버는 /1.1
-    - 서비스: 캠페인명 기준
-    """
     nk = nk_raw.copy()
 
-    # 숫자화
     for c in ["impCnt","clkCnt","ccnt","salesAmt","convAmt","avgRnk"]:
         if c in nk.columns:
             nk[c] = pd.to_numeric(nk[c], errors="coerce").fillna(0)
 
-    # 날짜 - statDt가 숫자(20260222)로 올 수 있어서 str 변환 후 파싱
     dt = pd.to_datetime(nk["statDt"].astype(str).str[:8], format="%Y%m%d", errors="coerce")
     month_s, week_s = _month_week_from_dt(dt)
 
@@ -1233,14 +1202,12 @@ def format_naver_keyword_report(nk_raw: pd.DataFrame) -> pd.DataFrame:
     out["주간"] = week_s
     out["매체"] = "네이버"
     out["매체 구분"] = "SA"
-    out["캠페인 유형"] = "파워링크"   # 너가 말한 네이버 파워링크
+    out["캠페인 유형"] = "파워링크"
     out["캠페인"] = nk.get("campaignName", nk.get("campaignId", "")).astype(str)
     out["그룹"] = nk.get("adgroupName", nk.get("adgroupId", "")).astype(str)
     out["키워드"] = nk.get("keywordName", "").astype(str)
 
-    # 기기: 캠페인명 우선
     out["기기"] = out["캠페인"].apply(infer_device_from_campaign_name_any)
-    # 보조: 캠페인명으로 못잡는 경우 RAW P/M 사용
     miss = out["기기"].isin(["", "전체"])
     if "pcMblTp" in nk.columns:
         out.loc[miss, "기기"] = nk.loc[miss, "pcMblTp"].apply(_naver_pc_mo_from_raw)
@@ -1248,28 +1215,20 @@ def format_naver_keyword_report(nk_raw: pd.DataFrame) -> pd.DataFrame:
     out["노출 수"] = nk.get("impCnt", 0).astype(int)
     out["클릭 수"] = nk.get("clkCnt", 0).astype(int)
 
-    # 총 비용: convAmt (실제 광고비, VAT제외)
     cost_col = "convAmt" if "convAmt" in nk.columns and nk["convAmt"].sum() > nk.get("salesAmt", pd.Series([0])).sum() else "salesAmt"
     out["총 비용"] = pd.to_numeric(nk.get(cost_col, 0), errors="coerce").fillna(0).apply(round_half_up_int)
 
-    # AD+AD_CONVERSION 머지 후 ccnt로 가입전환수 사용
     out["가입"] = pd.to_numeric(nk.get("ccnt", 0), errors="coerce").fillna(0).astype(int)
     out["평균노출순위"] = nk.get("avgRnk", 0).astype(float)
 
-    # ✅ 가산 = IFERROR(노출수*평균노출순위,0)
     out["가산"] = (out["노출 수"].astype(float) * out["평균노출순위"].astype(float)).fillna(0).round(1)
-
-    # ✅ 너 규칙: 네이버 광고비는 /1.1
     out["광고비(마크업포함,VAT포함)"] = (out["총 비용"].astype(float) / 1.1).round(1)
-
     out["서비스"] = assign_service_from_campaign(out["캠페인"].astype(str))
 
-    # 컬럼 정렬/보정
     for c in KW_FINAL_COLS:
         if c not in out.columns:
             out[c] = ""
 
-    # ✅ 노출 0인 행 제거
     out = out[out["노출 수"].astype(int) > 0].reset_index(drop=True)
 
     return out[KW_FINAL_COLS]
@@ -1288,10 +1247,9 @@ def format_google_keyword_report(gk_raw: pd.DataFrame) -> pd.DataFrame:
     out["캠페인 유형"] = "검색"
 
     out["캠페인"] = gk.get("캠페인", "").astype(str)
-    out["그룹"]   = gk.get("그룹", "").astype(str)          # ✅ "그룹"
+    out["그룹"]   = gk.get("그룹", "").astype(str)
     out["키워드"] = gk.get("키워드", "").astype(str)
 
-    # ✅ 기기: 캠페인명 기반(네가 원한 규칙)
     out["기기"] = gk.get("기기", "").astype(str)
     miss = out["기기"].isin(["", "전체"])
     out.loc[miss, "기기"] = out.loc[miss, "캠페인"].apply(infer_device_from_campaign_name_any)
@@ -1299,9 +1257,7 @@ def format_google_keyword_report(gk_raw: pd.DataFrame) -> pd.DataFrame:
     out["노출 수"] = pd.to_numeric(gk.get("노출 수", 0), errors="coerce").fillna(0).astype(int)
     out["클릭 수"] = pd.to_numeric(gk.get("클릭 수", 0), errors="coerce").fillna(0).astype(int)
 
-    # ✅ "총 비용(VAT포함)" → 총 비용
     out["총 비용"] = pd.to_numeric(gk.get("총 비용(VAT포함)", 0), errors="coerce").fillna(0).apply(round_half_up_int)
-
     out["가입"] = pd.to_numeric(gk.get("가입", 0), errors="coerce").fillna(0).astype(float)
 
     out["평균노출순위"] = 0.0
@@ -1310,28 +1266,19 @@ def format_google_keyword_report(gk_raw: pd.DataFrame) -> pd.DataFrame:
         pd.to_numeric(out["평균노출순위"], errors="coerce").fillna(0)
     ).round(1)
 
-    # ✅ 너 규칙: 구글 광고비는 *1.1
     out["광고비(마크업포함,VAT포함)"] = (out["총 비용"].astype(float) * 1.1).round(1)
-
     out["서비스"] = assign_service_from_campaign(out["캠페인"].astype(str))
 
     for c in KW_FINAL_COLS:
         if c not in out.columns:
             out[c] = ""
 
-    # ✅ 노출 0인 행 제거
     out = out[out["노출 수"].astype(int) > 0].reset_index(drop=True)
 
     return out[KW_FINAL_COLS]
 
 
-
-
-
 def _save_naver_raw_files(nk_raw: pd.DataFrame, prefix: str):
-    """
-    nk_raw(DataFrame)를 xlsx/csv로 저장하고 파일 경로 리스트를 반환
-    """
     if nk_raw is None or nk_raw.empty:
         return []
 
@@ -1340,7 +1287,7 @@ def _save_naver_raw_files(nk_raw: pd.DataFrame, prefix: str):
     csv_path  = f"{prefix}_{ts}.csv"
 
     nk_raw.to_excel(xlsx_path, index=False, engine="openpyxl")
-    nk_raw.to_csv(csv_path, index=False, encoding="utf-8-sig")  # 한글 안전
+    nk_raw.to_csv(csv_path, index=False, encoding="utf-8-sig")
 
     return [xlsx_path, csv_path]
 
@@ -1361,7 +1308,6 @@ def run_keyword_report(platform, d1, d2):
         g_raw_n = 0
         n_raw_n = 0
 
-        # Google
         if "Google" in platform:
             gk_raw = get_g_keyword_data(d_from, d_to)
             g_raw_n = len(gk_raw)
@@ -1371,7 +1317,6 @@ def run_keyword_report(platform, d1, d2):
                 logs.append(f"Google keywords(formatted): {len(gk_out)}행")
                 out_dfs.append(gk_out)
 
-        # Naver
         if "Naver" in platform:
             if not NAVER_ACCOUNTS:
                 logs.append("⚠️ NAVER 계정 환경변수 없음")
@@ -1388,7 +1333,6 @@ def run_keyword_report(platform, d1, d2):
                 if nk_raw.empty:
                     logs.append("⚠️ Naver report is empty")
                 else:
-                    # ✅ GPT 진단 로그
                     logs.append(f"[진단] 컬럼: {list(nk_raw.columns)}")
                     logs.append(f"[진단] keywordName 있음: {'keywordName' in nk_raw.columns}")
                     if "keywordName" in nk_raw.columns:
@@ -1401,7 +1345,6 @@ def run_keyword_report(platform, d1, d2):
                     logs.append(f"Naver keywords(formatted): {len(nk_out)}행")
                     out_dfs.append(nk_out)
 
-        # 결과 없음
         if not out_dfs:
             summary = "⚠️ 키워드 데이터 없음"
             detail = "\n".join(logs)
@@ -1409,7 +1352,6 @@ def run_keyword_report(platform, d1, d2):
 
         df_out = pd.concat(out_dfs, ignore_index=True)
 
-        # 컬럼 순서 강제
         for c in KW_FINAL_COLS:
             if c not in df_out.columns:
                 df_out[c] = ""
@@ -1437,23 +1379,12 @@ def run_keyword_report(platform, d1, d2):
 # -----------------------------
 
 def _build_conv_keywords_map(platform: str, d: pd.Timestamp, top_n=5, logs=None, excel_path: str = None):
-    """
-    return:
-      {
-        "사방넷|구글|검색": {
-            "group": "셀링툴",
-            "keywords": [{"keyword":"셀링툴","conv":2}, {"keyword":"대량등록","conv":1}]
-        },
-        ...
-      }
-    """
     if logs is None:
         logs = []
 
     d_from = d.strftime("%Y-%m-%d")
     d_to   = d.strftime("%Y-%m-%d")
 
-    # key = "서비스|매체|캠페인유형" -> group -> keyword -> conv
     bucket = {}
 
     def _add(service, media, camp_type, group, keyword, conv):
@@ -1464,7 +1395,6 @@ def _build_conv_keywords_map(platform: str, d: pd.Timestamp, top_n=5, logs=None,
             bucket[k][group] = {}
         bucket[k][group][keyword] = bucket[k][group].get(keyword, 0) + int(conv)
 
-    # ✅ 캐시 파일 먼저 시도
     gk_df = pd.DataFrame()
     nk_df = pd.DataFrame()
     if excel_path:
@@ -1482,7 +1412,6 @@ def _build_conv_keywords_map(platform: str, d: pd.Timestamp, top_n=5, logs=None,
             except Exception as e:
                 logs.append(f"⚠️ 캐시 로드 실패, API 재호출: {e}")
 
-    # ---- Google ----
     if "Google" in platform:
         try:
             gk = gk_df if not gk_df.empty else get_g_keyword_data(d_from, d_to)
@@ -1503,7 +1432,6 @@ def _build_conv_keywords_map(platform: str, d: pd.Timestamp, top_n=5, logs=None,
         except Exception as e:
             logs.append(f"⚠️ Google 키워드 전환 맵 실패: {e}")
 
-    # ---- Naver ----
     if "Naver" in platform:
         try:
             nk = nk_df if not nk_df.empty else get_n_keyword_data_report(d_from, d_to, report_tp="AD", logs=logs)
@@ -1524,10 +1452,8 @@ def _build_conv_keywords_map(platform: str, d: pd.Timestamp, top_n=5, logs=None,
         except Exception as e:
             logs.append(f"⚠️ Naver 키워드 전환 맵 실패: {e}")
 
-    # ---- 결과 만들기: 각 key(서비스|매체|유형)에서 "전환 가장 큰 그룹" 1개 뽑고 그 그룹의 키워드 top_n 뽑기 ----
     out = {}
     for k, group_dict in bucket.items():
-        # 그룹별 총 전환
         group_totals = {g: sum(kw.values()) for g, kw in group_dict.items()}
         if not group_totals:
             continue
@@ -1544,7 +1470,6 @@ def _build_conv_keywords_map(platform: str, d: pd.Timestamp, top_n=5, logs=None,
     return out
 
 def _pick_latest_date(df: pd.DataFrame) -> pd.Timestamp:
-    # df["기간"] 우선, 없으면 df["날짜"]
     col = "기간" if "기간" in df.columns else "날짜"
     dt = pd.to_datetime(df[col], errors="coerce")
     dt = dt.dropna()
@@ -1558,7 +1483,6 @@ def _filter_date(df: pd.DataFrame, target: pd.Timestamp) -> pd.DataFrame:
     return df.loc[dt == target.normalize()].copy()
 
 def _agg(df: pd.DataFrame) -> dict:
-    # 컬럼명은 네 통합리포트 기준
     impr = pd.to_numeric(df.get("노출수", 0), errors="coerce").fillna(0).sum()
     clicks = pd.to_numeric(df.get("클릭수", 0), errors="coerce").fillna(0).sum()
     spend = pd.to_numeric(df.get("광고비(마크업포함,VAT포함)", 0), errors="coerce").fillna(0).sum()
@@ -1566,7 +1490,6 @@ def _agg(df: pd.DataFrame) -> dict:
     return {"impr": float(impr), "clicks": float(clicks), "spend": float(spend), "conv": float(conv)}
 
 def _group(df: pd.DataFrame) -> pd.DataFrame:
-    # 서비스/매체/캠페인유형 단위로 묶기
     g = df.copy()
     for c in ["서비스", "매체", "캠페인유형"]:
         if c not in g.columns:
@@ -1586,12 +1509,10 @@ def _group(df: pd.DataFrame) -> pd.DataFrame:
         가입=("가입", "sum"),
         광고비=("광고비(마크업포함,VAT포함)", "sum"),
     )
-    # merge에서 suffix 적용되도록 컬럼명 맞춰둠
     out = out.rename(columns={"광고비": "광고비(마크업포함,VAT포함)"})
     return out
 
 def _safe_pct(cur: float, prev: float):
-    # prev=0 처리 (추측금지니까 None 리턴)
     try:
         cur = float(cur)
         prev = float(prev)
@@ -1602,14 +1523,12 @@ def _safe_pct(cur: float, prev: float):
     return round((cur - prev) / prev * 100)
 
 def _format_spend_delta_for_decrease(amount: float) -> str:
-    # 광고비 감소 시 만원 단위까지만 힌트 (가능하면 생략용)
     try:
         amt = float(amount)
     except Exception:
         return ""
     if amt >= 0:
         return ""
-    # 만원 단위 반올림
     man = int(round(abs(amt) / 10000))
     if man <= 0:
         return ""
@@ -1643,7 +1562,6 @@ def _build_summary_for_ai(df_all: pd.DataFrame, compare_mode: str) -> dict:
         suffixes=("_d", "_p")
     ).fillna(0)
 
-    # group()에서 광고비 컬럼명이 "광고비(마크업포함,VAT포함)"라서 suffix 붙으면 아래처럼 됨
     m["impr_pct"] = m.apply(lambda r: _safe_pct(float(r["노출수_d"]), float(r["노출수_p"])), axis=1)
     m["clicks_pct"] = m.apply(lambda r: _safe_pct(float(r["클릭수_d"]), float(r["클릭수_p"])), axis=1)
     m["spend_pct"] = m.apply(lambda r: _safe_pct(float(r["광고비(마크업포함,VAT포함)_d"]), float(r["광고비(마크업포함,VAT포함)_p"])), axis=1)
@@ -1654,7 +1572,6 @@ def _build_summary_for_ai(df_all: pd.DataFrame, compare_mode: str) -> dict:
     m["abs_conv_delta"] = m["conv_diff"].abs()
 
     top = m.sort_values(["abs_spend_delta", "abs_conv_delta"], ascending=False).head(6)
-    # ✅ 서비스 우선순위 강제: 사방넷 -> 사방넷미니 -> 풀필먼트
     service_order = {"사방넷": 0, "사방넷미니": 1, "풀필먼트": 2}
     top["_svc_order"] = top["서비스"].map(lambda x: service_order.get(str(x).strip(), 99))
     top = top.sort_values(["_svc_order", "abs_spend_delta", "abs_conv_delta"], ascending=[True, False, False])
@@ -1692,17 +1609,12 @@ def _build_summary_for_ai(df_all: pd.DataFrame, compare_mode: str) -> dict:
     }
 
 # =========================================================
-# ✅ 데일리 코멘트 생성 (D vs 비교일) - 추측 금지, % 중심
+# ✅ 데일리 코멘트 생성
 # =========================================================
 
 ALLOWED_ENDINGS = ["증가", "감소", "발생", "확인", "예정", "영향"]
 
 def _pick_compare_date(report_date: pd.Timestamp, compare_mode: str) -> pd.Timestamp:
-    """
-    compare_mode:
-      - "전일(D-1) 비교"
-      - "전주 동요일(D-7) 비교"
-    """
     if compare_mode == "전주 동요일(D-7) 비교":
         return report_date - pd.Timedelta(days=7)
     return report_date - pd.Timedelta(days=1)
@@ -1711,32 +1623,25 @@ def _pick_compare_date(report_date: pd.Timestamp, compare_mode: str) -> pd.Times
 def generate_daily_comment_from_excel(excel_path: str, platform: str, compare_mode: str, manual_actions: str = "", include_kw: bool = False) -> str:
     df = pd.read_excel(excel_path)
 
-    # 1) 엑셀에서 최신 날짜(D) 찾기
     d = _pick_latest_date(df)
-
-    # 2) 비교 날짜(p) 정하기 (✅ UI 선택 반영)
     p = _pick_compare_date(d, compare_mode)
 
-    # 3) 엑셀에 비교 날짜(p)가 없으면 -> API로 p~d 범위를 다시 만들어서 df를 대체
     df_p = _filter_date(df, p)
     if df_p.empty:
         try:
             d_from = p.strftime("%Y-%m-%d")
             d_to = d.strftime("%Y-%m-%d")
-
-            # ✅ build_final_df는 (df, logs) 튜플 반환이니까 df만 꺼내야 함
             df, _logs = build_final_df(platform, d_from, d_to)
-
         except Exception:
             return (
                 f"비교일({p.strftime('%Y-%m-%d')}) 데이터가 엑셀에 없고, "
                 f"API로 보충도 실패\n{traceback.format_exc()}"
             )
 
-    # ✅ summary 만들 때도 같은 compare_mode로 p 계산해야 일관됨
     summary = _build_summary_for_ai(df, compare_mode)
     if not summary.get("ok"):
         return summary.get("message", "비교 데이터 없음")
+
     kw_map = {}
     if include_kw:
         kw_map = _build_conv_keywords_map(platform, d, top_n=5, excel_path=excel_path)
@@ -1744,9 +1649,6 @@ def generate_daily_comment_from_excel(excel_path: str, platform: str, compare_mo
     for it in summary.get("issues", []):
         k = f"{it.get('service','')}|{it.get('media','')}|{it.get('campaign_type','')}"
         it["conv_kw_pack"] = kw_map.get(k, None)
-
-    if not summary.get("ok"):
-        return summary.get("message", "비교 데이터 없음")
 
     for it in summary["issues"]:
         it["spend_decrease_hint"] = _format_spend_delta_for_decrease(it.get("spend_delta", 0))
@@ -1762,7 +1664,7 @@ def generate_daily_comment_from_excel(excel_path: str, platform: str, compare_mo
   2. ...
 - 온점(.) 사용 금지
 - 문장 끝은 {", ".join(ALLOWED_ENDINGS)} 중 하나로 종결
-- “~하였습니다 / ~되었습니다” 금지
+- "~하였습니다 / ~되었습니다" 금지
 - 데이터에 없는 추측 해석 원인 생성 금지
 - 인과관계 추정 금지 변동은 증감율(%) 중심으로만 작성
 - 가입전환 증감 건수는 반드시 (+n건) (-n건) 형식으로 표기
@@ -1811,7 +1713,6 @@ def generate_daily_comment_from_excel(excel_path: str, platform: str, compare_mo
         "summary": summary,
     }
 
-    # ✅ Gemini: system instructions + user payload를 하나의 프롬프트로 합쳐서 전송
     full_prompt = instructions + "\n\n" + json.dumps(payload, ensure_ascii=False)
     resp = (_gemini.models.generate_content if _gemini else (_raise_no_key()))(
         model=GEMINI_MODEL,
@@ -1823,11 +1724,7 @@ def generate_daily_comment_from_excel(excel_path: str, platform: str, compare_mo
 
 
 # =========================================================
-# ✅ 9) UI  (2x2: 데일리/키워드 + 코멘트/챗봇)
-# =========================================================
-
-# =========================================================
-# ✅ 9) UI - Streamlit
+# ✅ 9) UI  - Streamlit
 # =========================================================
 
 st.set_page_config(page_title="사방넷 리포트 도우미", page_icon="💖", layout="wide")
@@ -1841,7 +1738,6 @@ st.markdown(f"""
     background: linear-gradient(180deg, #fff6fa 0%, #ffeef6 100%) !important;
 }}
 
-/* Hero */
 .hero {{
     border-radius: 28px;
     padding: 42px 48px;
@@ -1867,7 +1763,6 @@ st.markdown(f"""
     color: #c34c8f;
 }}
 
-/* Premium Card */
 .card {{
     border-radius: 26px;
     padding: 36px 40px;
@@ -1886,7 +1781,6 @@ st.markdown(f"""
         0 12px 25px rgba(255, 160, 200, 0.18);
 }}
 
-/* Buttons */
 button[kind="primary"] {{
     border-radius: 18px !important;
     background: linear-gradient(135deg, #ff9ecb, #ffb6dd) !important;
@@ -1909,7 +1803,6 @@ button {{
     border-radius: 16px !important;
 }}
 
-/* Tabs */
 button[role="tab"] {{
     font-weight: 700 !important;
     padding: 0.5rem 1rem !important;
@@ -1919,14 +1812,12 @@ button[aria-selected="true"] {{
     border-bottom: 3px solid #ff8dc5 !important;
 }}
 
-/* Dataframe */
 [data-testid="stDataFrame"] {{
     border-radius: 18px !important;
     overflow: hidden;
     box-shadow: 0 8px 20px rgba(255, 182, 193, 0.12);
 }}
 
-/* Sidebar */
 section[data-testid="stSidebar"] {{
     background: linear-gradient(180deg, #ffe9f4, #ffdff0);
 }}
@@ -1942,9 +1833,6 @@ section[data-testid="stSidebar"] {{
 # 대시보드 탭 (데일리 리포트 시각화)
 # =====================================================
 def render_daily_dashboard(df: pd.DataFrame, df_prev=None, d1=None, d2=None):
-    """데일리 리포트 시각화 - 서비스별 캠페인유형 테이블 중심"""
-    import plotly.graph_objects as go
-
     NUM_COLS = ["노출수","클릭수","총비용","가입","광고비(마크업포함,VAT포함)"]
     for c in NUM_COLS:
         if c in df.columns:
@@ -1958,236 +1846,232 @@ def render_daily_dashboard(df: pd.DataFrame, df_prev=None, d1=None, d2=None):
 
     def _s(d, col):
         return float(d[col].sum()) if d is not None and col in d.columns and len(d) > 0 else 0.0
-    def _pct(a, b): return f"{a/b*100:.2f}%" if b > 0 else "0%"
-    def _cpc(cost, clk): return f"{int(cost/clk):,}원" if clk > 0 else "-"
+    def _pct(a, b): return f"{a/b*100:.2f}%" if b > 0 else "-"
+    def _cpc(cost, clk): return f"{int(cost/clk):,}" if clk > 0 else "-"
     def _cpa(cost, conv): return f"{int(cost/conv):,}원" if conv > 0 else "-"
     def _delta_badge(cur, prev):
-        if prev == 0: return ""
+        if prev == 0: return '<span style="color:#aaa;font-size:13px">-</span>'
         pct = (cur - prev) / prev * 100
-        color = "#16a34a" if pct >= 0 else "#dc2626"
+        bg    = "rgba(220,252,231,0.9)" if pct >= 0 else "rgba(254,226,226,0.9)"
+        color = "#15803d" if pct >= 0 else "#dc2626"
         arrow = "▲" if pct >= 0 else "▼"
-        return f'<span style="color:{color};font-size:11px;font-weight:600">{arrow}{abs(pct):.1f}%</span>'
+        return f'<span style="background:{bg};color:{color};font-size:13px;font-weight:800;padding:2px 7px;border-radius:6px">{arrow}{abs(pct):.1f}%</span>'
+    def _delta_sub(cur, prev, unit=""):
+        if prev == 0: return f'<span style="color:rgba(255,255,255,0.4);font-size:11px">전일 {int(prev):,}{unit}</span>'
+        pct = (cur - prev) / prev * 100
+        color = "rgba(167,243,208,1)" if pct >= 0 else "rgba(252,165,165,1)"
+        arrow = "▲" if pct >= 0 else "▼"
+        return f'<span style="color:{color};font-size:14px;font-weight:800">{arrow}{abs(pct):.1f}%</span> <span style="color:rgba(255,255,255,0.4);font-size:11px">전일 {int(prev):,}{unit}</span>'
 
     period_label = f"{d1} ~ {d2}" if d1 and d2 else ""
 
-    # ── CSS ──────────────────────────────────────────
     st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;900&display=swap');
-    .dash-wrap { font-family: 'Noto Sans KR', sans-serif; }
 
     .hero-kpi {
-        background: linear-gradient(135deg, #1e1b4b 0%, #312e81 50%, #4c1d95 100%);
-        border-radius: 20px; padding: 24px 28px; color: white; margin-bottom: 20px;
+        background: linear-gradient(135deg, #be185d 0%, #db2777 40%, #ec4899 75%, #f9a8d4 100%);
+        border-radius: 22px; padding: 26px 30px; color: white; margin-bottom: 18px;
+        box-shadow: 0 8px 32px rgba(219,39,119,0.35);
     }
-    .hero-kpi-grid { display: grid; grid-template-columns: repeat(4,1fr); gap: 20px; margin-top: 16px; }
-    .hero-kpi-item { border-left: 1px solid rgba(255,255,255,0.15); padding-left: 16px; }
-    .hero-kpi-item:first-child { border-left: none; padding-left: 0; }
-    .hk-label { font-size: 11px; color: rgba(255,255,255,0.6); font-weight: 500; letter-spacing: 0.05em; text-transform: uppercase; }
-    .hk-value { font-size: 26px; font-weight: 900; color: white; line-height: 1.1; margin: 4px 0 2px; }
-    .hk-unit  { font-size: 12px; color: rgba(255,255,255,0.5); }
-    .hk-sub   { font-size: 11px; color: rgba(255,255,255,0.45); margin-top: 2px; }
+    .hero-title { font-size:17px; font-weight:900; letter-spacing:-0.3px; margin-bottom:18px;
+                  display:flex; align-items:center; gap:10px; }
+    .period-chip { background:rgba(255,255,255,0.2); backdrop-filter:blur(4px);
+                   color:white; padding:3px 12px; border-radius:20px; font-size:11px; font-weight:600; }
+    .hero-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:0; }
+    .hero-item { padding: 0 24px; border-left: 1px solid rgba(255,255,255,0.2); }
+    .hero-item:first-child { border-left:none; padding-left:0; }
+    .hi-label { font-size:10px; color:rgba(255,255,255,0.65); font-weight:600;
+                letter-spacing:0.08em; text-transform:uppercase; margin-bottom:5px; }
+    .hi-value { font-size:28px; font-weight:900; color:white; line-height:1.05; margin-bottom:4px; }
+    .hi-unit  { font-size:13px; font-weight:500; color:rgba(255,255,255,0.65); }
 
-    .svc-block { background: white; border-radius: 16px; padding: 20px 22px; margin-bottom: 14px;
-                 box-shadow: 0 2px 16px rgba(0,0,0,0.05); border: 1px solid #f1f0ff; }
-    .svc-name  { font-size: 15px; font-weight: 800; color: #1e1b4b; margin-bottom: 14px;
-                 padding-bottom: 10px; border-bottom: 2px solid #ede9fe; display: flex; align-items: center; gap: 8px; }
-    .svc-dot   { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+    .svc-card { background:white; border-radius:18px; padding:22px 24px; margin-bottom:16px;
+                box-shadow:0 4px 20px rgba(219,39,119,0.07); border:1px solid #fce7f3; }
+    .svc-header { display:flex; align-items:center; gap:10px; margin-bottom:16px;
+                  padding-bottom:12px; border-bottom:2px solid #fce7f3; }
+    .svc-dot { width:10px; height:10px; border-radius:50%; flex-shrink:0; }
+    .svc-title { font-size:16px; font-weight:900; color:#831843; }
 
-    .ct-table  { width: 100%; border-collapse: collapse; font-size: 12px; }
-    .ct-table th { background: #f8f7ff; color: #6d28d9; font-size: 10px; font-weight: 700;
-                   text-align: right; padding: 7px 10px; letter-spacing: 0.04em; white-space: nowrap; }
-    .ct-table th:first-child, .ct-table th:nth-child(2) { text-align: left; }
-    .ct-table td { padding: 9px 10px; border-bottom: 1px solid #f5f3ff; text-align: right;
-                   color: #374151; font-weight: 500; white-space: nowrap; }
-    .ct-table td:first-child, .ct-table td:nth-child(2) { text-align: left; }
-    .ct-table tr:last-child td { border-bottom: none; font-weight: 700; background: #faf8ff; }
-    .ct-table tr:hover td { background: #f8f7ff; }
+    .perf-table { width:100%; border-collapse:separate; border-spacing:0; font-size:12px; }
+    .perf-table thead tr { background:linear-gradient(90deg,#fdf2f8,#fce7f3); }
+    .perf-table th { padding:10px 12px; font-size:10px; font-weight:700; color:#9d174d;
+                     letter-spacing:0.06em; text-align:right; white-space:nowrap;
+                     border-bottom:2px solid #fbcfe8; }
+    .perf-table th:first-child { text-align:left; border-radius:10px 0 0 0; }
+    .perf-table th:nth-child(2) { text-align:left; }
+    .perf-table th:last-child { border-radius:0 10px 0 0; }
+    .perf-table td { padding:11px 12px; text-align:right; color:#374151; font-weight:500;
+                     border-bottom:1px solid #fdf2f8; white-space:nowrap; vertical-align:middle; }
+    .perf-table td:first-child { text-align:left; }
+    .perf-table td:nth-child(2) { text-align:left; color:#4b5563; font-weight:600; }
+    .perf-table tbody tr:hover td { background:#fdf2f8; transition:background 0.15s; }
+    .perf-table tfoot td { background:#fff0f7; font-weight:800; color:#831843;
+                           border-top:2px solid #fbcfe8; border-bottom:none; padding:12px 12px; }
+    .perf-table tfoot td:first-child { border-radius:0 0 0 10px; }
+    .perf-table tfoot td:last-child { border-radius:0 0 10px 0; }
 
-    .badge-n { background:#dcfce7; color:#15803d; padding:2px 8px; border-radius:6px; font-size:10px; font-weight:700; }
-    .badge-g { background:#fee2e2; color:#dc2626; padding:2px 8px; border-radius:6px; font-size:10px; font-weight:700; }
-    .badge-t { background:#fff7ed; color:#c2410c; padding:2px 8px; border-radius:6px; font-size:10px; font-weight:700; }
-    .badge-d { background:#f0fdf4; color:#166534; padding:2px 8px; border-radius:6px; font-size:10px; font-weight:700; }
+    .badge-n { display:inline-block; background:#dcfce7; color:#15803d; padding:3px 9px;
+               border-radius:7px; font-size:10px; font-weight:800; }
+    .badge-g { display:inline-block; background:#fee2e2; color:#dc2626; padding:3px 9px;
+               border-radius:7px; font-size:10px; font-weight:800; }
+    .badge-o { display:inline-block; background:#fff7ed; color:#c2410c; padding:3px 9px;
+               border-radius:7px; font-size:10px; font-weight:800; }
 
-    .conv-hi  { color: #7c3aed; font-weight: 800; font-size: 13px; }
-    .cost-num { color: #1e40af; font-weight: 700; }
-
-    .period-chip { background: #ede9fe; color: #5b21b6; padding: 3px 10px; border-radius: 20px;
-                   font-size: 11px; font-weight: 600; }
+    .conv-num { color:#9d174d; font-weight:900; font-size:14px; }
+    .cost-num { color:#1d4ed8; font-weight:700; }
+    .muted    { color:#9ca3af; }
     </style>
-    <div class="dash-wrap">
     """, unsafe_allow_html=True)
 
-    # ── 헤더 + 총합 KPI ─────────────────────────────
-    tc   = _s(df,      COST);   pc   = _s(df_prev, COST)
-    ti   = _s(df,      "노출수"); pi   = _s(df_prev, "노출수")
-    tk   = _s(df,      "클릭수"); pk   = _s(df_prev, "클릭수")
-    tv   = _s(df,      "가입");   pv   = _s(df_prev, "가입")
+    tc = _s(df,"광고비(마크업포함,VAT포함)"); pc = _s(df_prev,"광고비(마크업포함,VAT포함)")
+    ti = _s(df,"노출수"); pi = _s(df_prev,"노출수")
+    tk = _s(df,"클릭수"); pk = _s(df_prev,"클릭수")
+    tv = _s(df,"가입");   pv = _s(df_prev,"가입")
 
     st.markdown(f"""
     <div class="hero-kpi">
-      <div style="display:flex;justify-content:space-between;align-items:center">
-        <div>
-          <span style="font-size:18px;font-weight:900;letter-spacing:-0.5px">📊 광고 성과 대시보드</span>
-          <span style="margin-left:10px" class="period-chip">{period_label}</span>
-        </div>
-        {"<span style='font-size:11px;color:rgba(255,255,255,0.5)'>🔄 전일 대비 비교 포함</span>" if df_prev is not None else ""}
+      <div class="hero-title">
+        💖 광고 성과 대시보드
+        <span class="period-chip">{period_label}</span>
+        {"<span style='margin-left:auto;font-size:11px;color:rgba(255,255,255,0.55)'>🔄 전일 대비 비교 포함</span>" if df_prev is not None else ""}
       </div>
-      <div class="hero-kpi-grid">
-        <div class="hero-kpi-item">
-          <div class="hk-label">총 광고비</div>
-          <div class="hk-value">{int(tc):,}<span class="hk-unit">원</span></div>
-          <div class="hk-sub">{_delta_badge(tc,pc)} 전일 {int(pc):,}원</div>
+      <div class="hero-grid">
+        <div class="hero-item">
+          <div class="hi-label">총 광고비</div>
+          <div class="hi-value">{int(tc):,}<span class="hi-unit">원</span></div>
+          <div>{_delta_sub(tc,pc,"원")}</div>
         </div>
-        <div class="hero-kpi-item">
-          <div class="hk-label">총 노출수</div>
-          <div class="hk-value">{int(ti):,}</div>
-          <div class="hk-sub">{_delta_badge(ti,pi)} 전일 {int(pi):,}</div>
+        <div class="hero-item">
+          <div class="hi-label">총 노출수</div>
+          <div class="hi-value">{int(ti):,}</div>
+          <div>{_delta_sub(ti,pi)}</div>
         </div>
-        <div class="hero-kpi-item">
-          <div class="hk-label">총 클릭수</div>
-          <div class="hk-value">{int(tk):,}</div>
-          <div class="hk-sub">{_delta_badge(tk,pk)} 전일 {int(pk):,}</div>
+        <div class="hero-item">
+          <div class="hi-label">총 클릭수</div>
+          <div class="hi-value">{int(tk):,}</div>
+          <div>{_delta_sub(tk,pk)}</div>
         </div>
-        <div class="hero-kpi-item">
-          <div class="hk-label">총 가입전환</div>
-          <div class="hk-value" style="color:#a78bfa">{int(tv):,}<span class="hk-unit">건</span></div>
-          <div class="hk-sub">{_delta_badge(tv,pv)} 전일 {int(pv):,}건 · CPA {_cpa(tc,tv)}</div>
+        <div class="hero-item">
+          <div class="hi-label">총 가입전환</div>
+          <div class="hi-value" style="color:#fde68a">{int(tv):,}<span class="hi-unit">건</span></div>
+          <div>{_delta_sub(tv,pv,"건")} <span style="color:rgba(255,255,255,0.4);font-size:11px">· CPA {_cpa(tc,tv)}</span></div>
         </div>
       </div>
     </div>
     """, unsafe_allow_html=True)
 
-    # ── 서비스별 블록 ─────────────────────────────────
-    SVC_COLORS = {"사방넷":"#7c3aed","사방넷미니":"#0891b2","풀필먼트":"#059669"}
-    SVC_DOTS   = {"사방넷":"#7c3aed","사방넷미니":"#0891b2","풀필먼트":"#059669"}
-
-    MEDIA_BADGE = {
-        "네이버": '<span class="badge-n">네이버</span>',
-        "구글":   '<span class="badge-g">구글</span>',
-        "타블라": '<span class="badge-t">타불라</span>',
-        "타불라": '<span class="badge-t">타불라</span>',
-    }
-
     if "서비스" not in df.columns or "캠페인유형" not in df.columns:
         st.warning("서비스 또는 캠페인유형 컬럼이 없습니다.")
         return
 
-    services = [s for s in ["사방넷","사방넷미니","풀필먼트"] if s in df["서비스"].unique()]
-    if not services:
-        services = sorted([s for s in df["서비스"].unique() if str(s).strip() not in ("","nan","None")])
+    SVC_COLORS = {"사방넷":"#db2777","사방넷미니":"#0891b2","풀필먼트":"#059669"}
+    MEDIA_BADGE = {
+        "네이버":'<span class="badge-n">네이버</span>',
+        "구글":  '<span class="badge-g">구글</span>',
+        "타불라":'<span class="badge-o">타불라</span>',
+        "타블라":'<span class="badge-o">타불라</span>',
+    }
+
+    services_order = ["사방넷","사방넷미니","풀필먼트"]
+    services = [s for s in services_order if s in df["서비스"].unique()]
+    extra = [s for s in df["서비스"].unique() if s not in services_order and str(s).strip() not in ("","nan","None")]
+    services += extra
 
     for svc in services:
-        svc_df = df[df["서비스"]==svc]
+        svc_df   = df[df["서비스"]==svc]
         svc_prev = df_prev[df_prev["서비스"]==svc] if df_prev is not None and "서비스" in df_prev.columns else None
 
-        sc = _s(svc_df, COST); sk = _s(svc_df, "클릭수")
-        si = _s(svc_df, "노출수"); sv = _s(svc_df, "가입")
-        psc = _s(svc_prev, COST); psv = _s(svc_prev, "가입")
+        sc = _s(svc_df,"광고비(마크업포함,VAT포함)"); psc = _s(svc_prev,"광고비(마크업포함,VAT포함)")
+        si = _s(svc_df,"노출수");  sk = _s(svc_df,"클릭수"); sv = _s(svc_df,"가입"); psv = _s(svc_prev,"가입")
 
-        dot_color = SVC_COLORS.get(svc, "#6d28d9")
+        dot = SVC_COLORS.get(svc,"#db2777")
 
-        # 캠페인유형 x 매체 집계
         grp = svc_df.groupby(["매체","캠페인유형"], as_index=False).agg(
             노출=("노출수","sum"), 클릭=("클릭수","sum"),
             광고비=(COST,"sum"), 가입=("가입","sum")
         ).sort_values("광고비", ascending=False)
 
-        # 이전 데이터도 집계
         if svc_prev is not None and "캠페인유형" in svc_prev.columns:
-            grp_prev = svc_prev.groupby(["매체","캠페인유형"], as_index=False).agg(
-                광고비_prev=(COST,"sum"), 가입_prev=("가입","sum")
-            )
-            grp = grp.merge(grp_prev, on=["매체","캠페인유형"], how="left")
-            grp["광고비_prev"] = grp["광고비_prev"].fillna(0)
-            grp["가입_prev"]   = grp["가입_prev"].fillna(0)
+            gp = svc_prev.groupby(["매체","캠페인유형"], as_index=False).agg(
+                광고비_p=(COST,"sum"), 가입_p=("가입","sum"))
+            grp = grp.merge(gp, on=["매체","캠페인유형"], how="left").fillna({"광고비_p":0,"가입_p":0})
         else:
-            grp["광고비_prev"] = 0.0
-            grp["가입_prev"]   = 0.0
+            grp["광고비_p"] = 0.0; grp["가입_p"] = 0.0
 
-        # 테이블 행 생성
-        rows_html = ""
-        for _, row in grp.iterrows():
-            media_badge = MEDIA_BADGE.get(str(row["매체"]), f'<span style="background:#f3f4f6;color:#374151;padding:2px 8px;border-radius:6px;font-size:10px;font-weight:700">{row["매체"]}</span>')
-            ctr  = _pct(row["클릭"], row["노출"])
-            cpc  = _cpc(row["광고비"], row["클릭"])
-            cpa  = _cpa(row["광고비"], row["가입"])
-            rate = _pct(row["가입"], row["클릭"])
-            cost_d = _delta_badge(row["광고비"], row["광고비_prev"])
-            conv_d = _delta_badge(row["가입"], row["가입_prev"])
-            conv_cell = f'<span class="conv-hi">{int(row["가입"]):,}</span>' if row["가입"] > 0 else '<span style="color:#d1d5db">-</span>'
-
-            rows_html += f"""<tr>
-              <td>{media_badge}</td>
-              <td>{row['캠페인유형']}</td>
-              <td>{int(row['노출']):,}</td>
-              <td>{int(row['클릭']):,}</td>
-              <td style="color:#6b7280">{ctr}</td>
-              <td style="color:#6b7280">{cpc}</td>
-              <td><span class="cost-num">{int(row['광고비']):,}원</span><br><span style="font-size:10px">{cost_d}</span></td>
-              <td>{conv_cell}<br><span style="font-size:10px">{conv_d}</span></td>
-              <td style="color:#6b7280">{rate}</td>
-              <td style="color:#6b7280">{cpa}</td>
+        rows = ""
+        for _, r in grp.iterrows():
+            badge = MEDIA_BADGE.get(str(r["매체"]), f'<span style="background:#f3f4f6;color:#374151;padding:3px 8px;border-radius:6px;font-size:10px;font-weight:700">{r["매체"]}</span>')
+            conv_cell = f'<span class="conv-num">{int(r["가입"])}</span>' if r["가입"] > 0 else '<span class="muted">-</span>'
+            db_cost = _delta_badge(r["광고비"], r["광고비_p"])
+            db_conv = _delta_badge(r["가입"], r["가입_p"])
+            rows += f"""<tr>
+              <td>{badge}</td>
+              <td>{r['캠페인유형']}</td>
+              <td>{int(r['노출']):,}</td>
+              <td>{int(r['클릭']):,}</td>
+              <td class="muted">{_pct(r['클릭'],r['노출'])}</td>
+              <td class="muted">{_cpc(r['광고비'],r['클릭'])}</td>
+              <td><span class="cost-num">{int(r['광고비']):,}원</span>&nbsp;{db_cost}</td>
+              <td>{conv_cell}&nbsp;{db_conv}</td>
+              <td class="muted">{_pct(r['가입'],r['클릭'])}</td>
+              <td class="muted">{_cpa(r['광고비'],r['가입'])}</td>
             </tr>"""
 
-        # 합계 행
-        rows_html += f"""<tr>
-          <td colspan="2" style="text-align:left;color:#5b21b6">합계</td>
-          <td>{int(si):,}</td>
-          <td>{int(sk):,}</td>
-          <td style="color:#6b7280">{_pct(sk,si)}</td>
-          <td style="color:#6b7280">{_cpc(sc,sk)}</td>
-          <td><span class="cost-num">{int(sc):,}원</span><br><span style="font-size:10px">{_delta_badge(sc,psc)}</span></td>
-          <td><span class="conv-hi">{int(sv):,}</span><br><span style="font-size:10px">{_delta_badge(sv,psv)}</span></td>
-          <td style="color:#6b7280">{_pct(sv,sk)}</td>
-          <td style="color:#6b7280">{_cpa(sc,sv)}</td>
+        db_sc = _delta_badge(sc, psc); db_sv = _delta_badge(sv, psv)
+        foot = f"""<tr>
+          <td colspan="2">합계</td>
+          <td>{int(si):,}</td><td>{int(sk):,}</td>
+          <td>{_pct(sk,si)}</td><td>{_cpc(sc,sk)}</td>
+          <td>{int(sc):,}원&nbsp;{db_sc}</td>
+          <td>{int(sv):,}건&nbsp;{db_sv}</td>
+          <td>{_pct(sv,sk)}</td><td>{_cpa(sc,sv)}</td>
         </tr>"""
 
         st.markdown(f"""
-        <div class="svc-block">
-          <div class="svc-name">
-            <span class="svc-dot" style="background:{dot_color}"></span>
-            {svc}
+        <div class="svc-card">
+          <div class="svc-header">
+            <span class="svc-dot" style="background:{dot}"></span>
+            <span class="svc-title">{svc}</span>
+            <span style="margin-left:auto;font-size:12px;color:#9d174d;font-weight:600">
+              광고비 {int(sc):,}원 &nbsp;|&nbsp; 가입 {int(sv):,}건 &nbsp;|&nbsp; CPA {_cpa(sc,sv)}
+            </span>
           </div>
-          <table class="ct-table">
+          <table class="perf-table">
             <thead><tr>
               <th>매체</th><th>캠페인유형</th>
               <th>노출</th><th>클릭</th><th>CTR</th><th>CPC</th>
-              <th>광고비</th><th>가입</th><th>가입율</th><th>CPA</th>
+              <th>광고비 (전일비교)</th><th>가입 (전일비교)</th><th>가입율</th><th>CPA</th>
             </tr></thead>
-            <tbody>{rows_html}</tbody>
+            <tbody>{rows}</tbody>
+            <tfoot>{foot}</tfoot>
           </table>
         </div>
         """, unsafe_allow_html=True)
 
-    st.markdown("</div>", unsafe_allow_html=True)
-
-
-
-
-
 
 # ── 세션 상태 초기화 ──────────────────────────────────────
-if "saved_path"     not in st.session_state: st.session_state.saved_path     = None
-if "saved_platform" not in st.session_state: st.session_state.saved_platform = None
-if "chat_history"   not in st.session_state: st.session_state.chat_history   = []
+if "saved_path"        not in st.session_state: st.session_state.saved_path        = None
+if "saved_platform"    not in st.session_state: st.session_state.saved_platform    = None
+if "chat_history"      not in st.session_state: st.session_state.chat_history      = []
 if "daily_preset_prev" not in st.session_state: st.session_state.daily_preset_prev = "어제"
 if "kw_preset_prev"    not in st.session_state: st.session_state.kw_preset_prev    = "주간(월~일)"
+if "comment_out"       not in st.session_state: st.session_state.comment_out       = ""   # ✅ 추가
 
 _r = preset_range("어제")
 if "daily_d1" not in st.session_state: st.session_state.daily_d1 = datetime.strptime(_r[0][:10], "%Y-%m-%d").date()
 if "daily_d2" not in st.session_state: st.session_state.daily_d2 = datetime.strptime(_r[1][:10], "%Y-%m-%d").date()
-_kr = preset_range("주간(월~일)")
+
 if "daily_log"      not in st.session_state: st.session_state.daily_log      = ""
 if "daily_df"       not in st.session_state: st.session_state.daily_df       = None
 if "daily_df_prev"  not in st.session_state: st.session_state.daily_df_prev  = None
 if "daily_d1_saved" not in st.session_state: st.session_state.daily_d1_saved = None
 if "daily_d2_saved" not in st.session_state: st.session_state.daily_d2_saved = None
-if "daily_fname" not in st.session_state: st.session_state.daily_fname = None
-if "kw_log" not in st.session_state: st.session_state.kw_log = ""
-if "kw_detail_log" not in st.session_state: st.session_state.kw_detail_log = ""
-if "kw_fname" not in st.session_state: st.session_state.kw_fname = None
-if "kw_df"    not in st.session_state: st.session_state.kw_df    = None
+if "daily_fname"    not in st.session_state: st.session_state.daily_fname    = None
+if "kw_log"         not in st.session_state: st.session_state.kw_log         = ""
+if "kw_detail_log"  not in st.session_state: st.session_state.kw_detail_log  = ""
+if "kw_fname"       not in st.session_state: st.session_state.kw_fname       = None
+if "kw_df"          not in st.session_state: st.session_state.kw_df          = None
 
 # =====================================================
 # 메인 레이아웃: 좌(대시보드) | 우(리포트+코멘트+챗봇)
@@ -2220,7 +2104,6 @@ with col_left:
 # ══════════════════════════════════════════════════
 with col_right:
 
-    # ── 상단: 데일리리포트 / 키워드 탭 ──────────────
     tab_daily, tab_kw = st.tabs(["📌 데일리 리포트", "🔎 키워드 성과"])
 
     with tab_daily:
@@ -2259,23 +2142,25 @@ with col_right:
                 log_msg, fname, saved, plat = run_all(
                     platform, str(d1), str(d2), tabula_path
                 )
+                try:
+                    _df_today, _ = build_final_df(platform, str(d1), str(d2), tabula_path)
+                    from datetime import timedelta as _td
+                    _d1_prev = (datetime.strptime(str(d1), "%Y-%m-%d") - _td(days=1)).strftime("%Y-%m-%d")
+                    _d2_prev = (datetime.strptime(str(d2), "%Y-%m-%d") - _td(days=1)).strftime("%Y-%m-%d")
+                    _df_prev, _ = build_final_df(platform, _d1_prev, _d2_prev)
+                    st.session_state.daily_df       = _df_today if not _df_today.empty else None
+                    st.session_state.daily_df_prev  = _df_prev  if not _df_prev.empty  else None
+                    st.session_state.daily_d1_saved = str(d1)
+                    st.session_state.daily_d2_saved = str(d2)
+                except Exception as _e:
+                    st.session_state.daily_df = None
+                    st.session_state.daily_df_prev = None
+
             st.session_state.daily_log = log_msg
             if fname and os.path.exists(fname):
                 st.session_state.saved_path     = fname
                 st.session_state.saved_platform = plat
                 st.session_state.daily_fname    = fname
-                try:
-                    st.session_state.daily_df       = pd.read_excel(fname)
-                    st.session_state.daily_d1_saved = str(d1)
-                    st.session_state.daily_d2_saved = str(d2)
-                    from datetime import timedelta as _td
-                    _d1_prev = (datetime.strptime(str(d1), "%Y-%m-%d") - _td(days=1)).strftime("%Y-%m-%d")
-                    _d2_prev = (datetime.strptime(str(d2), "%Y-%m-%d") - _td(days=1)).strftime("%Y-%m-%d")
-                    _df_prev, _ = build_final_df(platform, _d1_prev, _d2_prev)
-                    st.session_state.daily_df_prev = _df_prev if not _df_prev.empty else None
-                except Exception as _e:
-                    st.session_state.daily_df = None
-                    st.session_state.daily_df_prev = None
 
         if st.session_state.daily_log:
             with st.expander("📋 로그 보기"):
@@ -2355,7 +2240,7 @@ with col_right:
             else:
                 with st.spinner("코멘트 생성 중..."):
                     try:
-                        st.session_state.comment_out = generate_daily_comment_from_excel(
+                        result = generate_daily_comment_from_excel(
                             st.session_state.saved_path,
                             st.session_state.saved_platform,
                             compare_mode,
@@ -2363,9 +2248,13 @@ with col_right:
                             include_kw=include_kw
                         )
                     except Exception:
-                        st.session_state.comment_out = f"❌ 코멘트 생성 오류:\n{traceback.format_exc()}"
+                        result = f"❌ 코멘트 생성 오류:\n{traceback.format_exc()}"
 
-        st.text_area("코멘트", value=st.session_state.get("comment_out",""), height=300, key="comment_out_display")
+                # ✅ 핵심 수정: session_state에 결과 저장
+                st.session_state.comment_out = result
+
+        # ✅ 핵심 수정: key 제거 → value만으로 표시 (session_state 충돌 없음)
+        st.text_area("코멘트", value=st.session_state.comment_out, height=300)
 
     with tab_chat:
         for msg in st.session_state.chat_history:
