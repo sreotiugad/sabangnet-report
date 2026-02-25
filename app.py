@@ -504,6 +504,12 @@ def get_n_keyword_data_report(d_from, d_to, report_tp="AD", logs=None) -> pd.Dat
             # AD_CONVERSION 리포트 (전환수) - 실패해도 AD만으로 진행
             df_conv = _fetch_naver_report_day(acc, day, "AD_CONVERSION", camp_map, grp_map, kw_map, logs)
             if df_conv is not None and "ccnt" in df_conv.columns:
+                # ✅ 머지 전 진단
+                logs.append(f"[진단] AD pcMblTp 값: {df_ad['pcMblTp'].unique().tolist()}")
+                logs.append(f"[진단] CONV pcMblTp 값: {df_conv['pcMblTp'].unique().tolist()}")
+                logs.append(f"[진단] CONV keywordId 샘플: {df_conv['keywordId'].head(3).tolist()}")
+                logs.append(f"[진단] AD keywordId 샘플: {df_ad['keywordId'].head(3).tolist()}")
+
                 # keywordId + pcMblTp 기준으로 ccnt 머지
                 conv_cols = ["keywordId", "pcMblTp", "ccnt"]
                 conv_agg = df_conv[conv_cols].groupby(["keywordId", "pcMblTp"], as_index=False)["ccnt"].sum()
