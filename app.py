@@ -617,6 +617,9 @@ def _fetch_naver_report_day(acc, day, report_tp, camp_map, grp_map, kw_map, logs
         if report_tp == "AD":
             head2 = "\n".join(txt.splitlines()[:2])
             logs.append(f"[NAVER] AD raw 샘플:\n{head2}")
+        if report_tp == "EXPKEYWORD":
+            head2 = "\n".join(txt.splitlines()[:2])
+            logs.append(f"[NAVER] EXPKEYWORD raw 샘플:\n{head2}")
 
         if report_tp == "AD":
             base_cols = [
@@ -1344,7 +1347,7 @@ def run_keyword_report(platform, d1, d2):
             if not NAVER_ACCOUNTS:
                 logs.append("⚠️ NAVER 계정 환경변수 없음")
             else:
-                NAVER_REPORT_TP_FOR_KEYWORD = os.environ.get("NAVER_KEYWORD_REPORT_TP", "AD")
+                NAVER_REPORT_TP_FOR_KEYWORD = os.environ.get("NAVER_KEYWORD_REPORT_TP", "EXPKEYWORD")
                 nk_raw = get_n_keyword_data_report(
                     d_from, d_to,
                     report_tp=NAVER_REPORT_TP_FOR_KEYWORD,
