@@ -592,14 +592,13 @@ def _fetch_naver_report_day(acc, day, report_tp, camp_map, grp_map, kw_map, logs
             ]
             if col_count >= 15:
                 base_cols.append("cpConv")
-        else:  # AD_CONVERSION
+        else:  # AD_CONVERSION - 실제 13컬럼
+            # statDt, customerId, campaignId, adgroupId, keywordId, adId, bsnId, bidAmt, pcMblTp, clkCnt, convType, ccnt, (미확인)
             base_cols = [
                 "statDt","customerId","campaignId","adgroupId",
                 "keywordId","adId","bsnId","bidAmt","pcMblTp",
-                "impCnt","clkCnt","ccnt","salesAmt","avgRnk"
+                "clkCnt","convType","ccnt","extra1"
             ]
-            if col_count >= 15:
-                base_cols.append("cpConv")
 
         df = pd.read_csv(io.StringIO(txt), sep="\t", header=None, names=base_cols, engine="python")
         df["campaignName"] = df["campaignId"].map(camp_map).fillna(df["campaignId"])
@@ -2073,5 +2072,3 @@ with col_chat:
     if st.button("대화 초기화", key="chat_reset"):
         st.session_state.chat_history = []
         st.rerun()
-
-
