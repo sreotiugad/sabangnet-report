@@ -1353,7 +1353,7 @@ def run_keyword_report(platform, d1, d2):
                         logs.append(f"[진단] unique 키워드 수: {nk_raw['keywordName'].nunique()}")
                     if "ccnt" in nk_raw.columns:
                         logs.append(f"[진단] ccnt>0 행: {(nk_raw['ccnt'] > 0).sum()} / {len(nk_raw)}")
-                logs.append(f"[진단] ccnt 합계: {int(nk_raw['ccnt'].sum())}")
+                        logs.append(f"[진단] ccnt 합계: {int(nk_raw['ccnt'].sum())}")
                     nk_out = format_naver_keyword_report(nk_raw)
                     logs.append(f"Naver keywords(formatted): {len(nk_out)}행")
                     out_dfs.append(nk_out)
