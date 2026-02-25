@@ -509,8 +509,11 @@ def get_n_keyword_data_report(d_from, d_to, report_tp="AD", logs=None) -> pd.Dat
             if len(df_ad) < before:
                 logs.append(f"[NAVER] BS 캠페인 행 제거: {before}→{len(df_ad)} day={day}")
 
-            # AD_CONVERSION 리포트 (전환수) - 실패해도 AD만으로 진행
-            df_conv = _fetch_naver_report_day(acc, day, "AD_CONVERSION", camp_map, grp_map, kw_map, logs)
+            # AD_CONVERSION 머지 (EXPKEYWORD는 ccnt 이미 포함되어 있으므로 스킵)
+            if report_tp != "EXPKEYWORD":
+                df_conv = _fetch_naver_report_day(acc, day, "AD_CONVERSION", camp_map, grp_map, kw_map, logs)
+            else:
+                df_conv = None
             if df_conv is not None and "ccnt" in df_conv.columns:
                 # ✅ BS 캠페인 제거
                 df_conv = df_conv[~df_conv["campaignId"].astype(str).str.contains("-a001-04-", na=False)]
@@ -542,7 +545,9 @@ def get_n_keyword_data_report(d_from, d_to, report_tp="AD", logs=None) -> pd.Dat
 
     result = pd.concat(all_dfs, ignore_index=True)
 
-    dedup_cols = ["statDt","campaignId","adgroupId","keywordId","pcMblTp"]
+    dedup_cols = ["statDt","campaignId","adgroupId","keywordName","pcMblTp"]
+    if "keywordId" in result.columns:
+        dedup_cols = ["statDt","campaignId","adgroupId","keywordId","pcMblTp"]
     existing_dedup = [c for c in dedup_cols if c in result.columns]
     if existing_dedup:
         before = len(result)
@@ -630,18 +635,12 @@ def _fetch_naver_report_day(acc, day, report_tp, camp_map, grp_map, kw_map, logs
             if col_count >= 15:
                 base_cols.append("cpConv")
         elif report_tp == "EXPKEYWORD":
-            # EXPKEYWORD: 검색어 기준 리포트 (keywordId 없이 keywordName 직접 제공)
+            # 12컬럼: statDt customerId campaignId adgroupId keywordName bidAmt pcMblTp impCnt clkCnt ccnt salesAmt avgRnk
             base_cols = [
                 "statDt","customerId","campaignId","adgroupId",
                 "keywordName","bidAmt","pcMblTp",
                 "impCnt","clkCnt","ccnt","salesAmt","avgRnk"
             ]
-            if col_count >= 13:
-                base_cols = [
-                    "statDt","customerId","campaignId","adgroupId",
-                    "keywordName","bidAmt","pcMblTp",
-                    "impCnt","clkCnt","convAmt","salesAmt","avgRnk","extra1"
-                ][:col_count]
         else:  # AD_CONVERSION - 실제 13컬럼
             # statDt, customerId, campaignId, adgroupId, keywordId, adId, bsnId, bidAmt, pcMblTp, clkCnt, convType, ccnt, (미확인)
             base_cols = [
@@ -653,7 +652,12 @@ def _fetch_naver_report_day(acc, day, report_tp, camp_map, grp_map, kw_map, logs
         df = pd.read_csv(io.StringIO(txt), sep="\t", header=None, names=base_cols, engine="python")
         df["campaignName"] = df["campaignId"].map(camp_map).fillna(df["campaignId"])
         df["adgroupName"]  = df["adgroupId"].map(grp_map).fillna(df["adgroupId"])
-        df["keywordName"]  = df["keywordId"].map(kw_map).fillna(df["keywordId"])
+        if report_tp == "EXPKEYWORD":
+            # keywordName이 이미 컬럼에 있음, keywordId는 없음
+            if "keywordId" not in df.columns:
+                df["keywordId"] = df["keywordName"]
+        else:
+            df["keywordName"] = df["keywordId"].map(kw_map).fillna(df["keywordId"])
         if "statDt" not in df.columns:
             df["statDt"] = day
         logs.append(f"[NAVER] parsed rows day={day} reportTp={report_tp} rows={len(df)}")
