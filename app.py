@@ -143,23 +143,31 @@ def preset_range(preset: str):
     today = date.today()
 
     if preset == "주간(월~일)":
-        end = today
-        monday = end - timedelta(days=end.weekday())
-        sunday = monday + timedelta(days=6)
-        s, e = monday, sunday
+        weekday = today.weekday()  # 월=0
+        s = today - timedelta(days=weekday)
+        e = s + timedelta(days=6)
+
     elif preset == "어제":
-        s = e = today - timedelta(days=1)
+        s = today - timedelta(days=1)
+        e = s
+
     elif preset == "지난 7일":
-        e = today - timedelta(days=1)
-        s = e - timedelta(days=6)
+        s = today - timedelta(days=7)
+        e = today
+
     elif preset == "지난 30일":
-        e = today - timedelta(days=1)
-        s = e - timedelta(days=29)
+        s = today - timedelta(days=30)
+        e = today
+
     elif preset == "이번 달":
-        e = today - timedelta(days=1)
-        s = e.replace(day=1)
-    else:
-        s, e = today - timedelta(days=6), today
+        s = today.replace(day=1)
+        e = today
+
+    else:  # 직접선택
+        s = today
+        e = today
+
+    return s.isoformat(), e.isoformat()
 
     
 def _apply_preset(prefix: str):
