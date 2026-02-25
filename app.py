@@ -4,6 +4,7 @@ import math
 import os, time, json, hmac, base64, hashlib, traceback, re
 import io, zipfile
 from urllib.parse import urlparse, parse_qs
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import numpy as np
 import pandas as pd
@@ -373,7 +374,8 @@ def naver_build_name_maps(acc, exclude_bs=False):
 
     # 그룹 id->name + 키워드 id 수집
     grp_map = {}
-    all_kw_ids = []  # 전체 키워드 ID 모아두기
+    all_gids = []  # 전체 그룹 ID 모아두기
+
     for cid in list(camp_map.keys()):
         try:
             grps = naver_list_adgroups(acc, cid)
@@ -381,28 +383,35 @@ def naver_build_name_maps(acc, exclude_bs=False):
                 gid = g.get("nccAdgroupId")
                 if gid:
                     grp_map[gid] = g.get("name")
-                    # 그룹별 키워드 ID 수집
-                    try:
-                        uri = "/ncc/keywords"
-                        r = requests.get(
-                            NAVER_BASE_URL + uri,
-                            headers=naver_headers(acc, uri, "GET"),
-                            params={"nccAdgroupId": gid},
-                            timeout=30
-                        )
-                        if r.status_code == 200:
-                            kws = safe_json(r) or []
-                            for kw in (kws if isinstance(kws, list) else []):
-                                kid = kw.get("nccKeywordId")
-                                kname = kw.get("keyword", "")
-                                if kid and kname:
-                                    all_kw_ids.append((kid, kname))
-                    except Exception:
-                        pass
+                    all_gids.append(gid)
         except Exception:
             pass
 
-    # keywordId → keywordName 매핑 딕셔너리
+    # ✅ 그룹별 키워드 병렬 호출
+    def _fetch_kws(gid):
+        try:
+            uri = "/ncc/keywords"
+            r = requests.get(
+                NAVER_BASE_URL + uri,
+                headers=naver_headers(acc, uri, "GET"),
+                params={"nccAdgroupId": gid},
+                timeout=30
+            )
+            if r.status_code == 200:
+                kws = safe_json(r) or []
+                return [(kw.get("nccKeywordId"), kw.get("keyword", ""))
+                        for kw in (kws if isinstance(kws, list) else [])
+                        if kw.get("nccKeywordId") and kw.get("keyword")]
+        except Exception:
+            pass
+        return []
+
+    all_kw_ids = []
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futures = {executor.submit(_fetch_kws, gid): gid for gid in all_gids}
+        for future in as_completed(futures):
+            all_kw_ids.extend(future.result())
+
     kw_map = {kid: kname for kid, kname in all_kw_ids}
     return camp_map, grp_map, kw_map
 
@@ -1202,6 +1211,10 @@ def format_naver_keyword_report(nk_raw: pd.DataFrame) -> pd.DataFrame:
     for c in KW_FINAL_COLS:
         if c not in out.columns:
             out[c] = ""
+
+    # ✅ 노출 0인 행 제거
+    out = out[out["노출 수"].astype(int) > 0].reset_index(drop=True)
+
     return out[KW_FINAL_COLS]
 
 def format_google_keyword_report(gk_raw: pd.DataFrame) -> pd.DataFrame:
@@ -1248,6 +1261,10 @@ def format_google_keyword_report(gk_raw: pd.DataFrame) -> pd.DataFrame:
     for c in KW_FINAL_COLS:
         if c not in out.columns:
             out[c] = ""
+
+    # ✅ 노출 0인 행 제거
+    out = out[out["노출 수"].astype(int) > 0].reset_index(drop=True)
+
     return out[KW_FINAL_COLS]
 
 
