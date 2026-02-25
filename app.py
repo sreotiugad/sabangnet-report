@@ -545,16 +545,42 @@ def get_n_keyword_data_report(d_from, d_to, report_tp="AD", logs=None) -> pd.Dat
 
     result = pd.concat(all_dfs, ignore_index=True)
 
-    dedup_cols = ["statDt","campaignId","adgroupId","keywordName","pcMblTp"]
+    if result.empty:
+        return result
+
+    # ✅ keywordId+pcMblTp 기준으로 집계 (adId별 중복행 합산)
     if "keywordId" in result.columns:
-        dedup_cols = ["statDt","campaignId","adgroupId","keywordId","pcMblTp"]
-    existing_dedup = [c for c in dedup_cols if c in result.columns]
-    if existing_dedup:
+        group_cols = ["statDt","customerId","campaignId","adgroupId","keywordId","pcMblTp",
+                      "campaignName","adgroupName","keywordName"]
+        sum_cols = [c for c in ["impCnt","clkCnt","salesAmt","ccnt"] if c in result.columns]
+        avg_cols = [c for c in ["avgRnk"] if c in result.columns]
+        first_cols = [c for c in ["bidAmt","convAmt","bsnId","adId"] if c in result.columns]
+
+        group_cols = [c for c in group_cols if c in result.columns]
+        agg_dict = {c: "sum" for c in sum_cols}
+        agg_dict.update({c: "mean" for c in avg_cols})
+        agg_dict.update({c: "first" for c in first_cols})
+
         before = len(result)
-        result = result.drop_duplicates(subset=existing_dedup).reset_index(drop=True)
+        result = result.groupby(group_cols, as_index=False).agg(agg_dict)
         after = len(result)
         if before != after:
-            logs.append(f"[NAVER] 중복 제거: {before}행 → {after}행")
+            logs.append(f"[NAVER] 집계(adId 합산): {before}행 → {after}행")
+    else:
+        # EXPKEYWORD: keywordName 기준 집계
+        group_cols = ["statDt","customerId","campaignId","adgroupId","keywordName","pcMblTp",
+                      "campaignName","adgroupName"]
+        group_cols = [c for c in group_cols if c in result.columns]
+        sum_cols = [c for c in ["impCnt","clkCnt","salesAmt","ccnt"] if c in result.columns]
+        avg_cols = [c for c in ["avgRnk"] if c in result.columns]
+        agg_dict = {c: "sum" for c in sum_cols}
+        agg_dict.update({c: "mean" for c in avg_cols})
+
+        before = len(result)
+        result = result.groupby(group_cols, as_index=False).agg(agg_dict)
+        after = len(result)
+        if before != after:
+            logs.append(f"[NAVER] 집계: {before}행 → {after}행")
 
     return result
 
@@ -1364,7 +1390,7 @@ def run_keyword_report(platform, d1, d2):
             if not NAVER_ACCOUNTS:
                 logs.append("⚠️ NAVER 계정 환경변수 없음")
             else:
-                NAVER_REPORT_TP_FOR_KEYWORD = os.environ.get("NAVER_KEYWORD_REPORT_TP", "EXPKEYWORD")
+                NAVER_REPORT_TP_FOR_KEYWORD = os.environ.get("NAVER_KEYWORD_REPORT_TP", "AD")
                 nk_raw = get_n_keyword_data_report(
                     d_from, d_to,
                     report_tp=NAVER_REPORT_TP_FOR_KEYWORD,
