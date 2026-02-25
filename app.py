@@ -1949,16 +1949,24 @@ _r = preset_range("어제")
 if "daily_d1" not in st.session_state: st.session_state.daily_d1 = datetime.strptime(_r[0][:10], "%Y-%m-%d").date()
 if "daily_d2" not in st.session_state: st.session_state.daily_d2 = datetime.strptime(_r[1][:10], "%Y-%m-%d").date()
 _kr = preset_range("주간(월~일)")
-if "daily_log" not in st.session_state: st.session_state.daily_log = ""
+if "daily_log"      not in st.session_state: st.session_state.daily_log      = ""
+if "daily_df"       not in st.session_state: st.session_state.daily_df       = None
+if "daily_df_prev"  not in st.session_state: st.session_state.daily_df_prev  = None
+if "daily_d1_saved" not in st.session_state: st.session_state.daily_d1_saved = None
+if "daily_d2_saved" not in st.session_state: st.session_state.daily_d2_saved = None
 if "daily_fname" not in st.session_state: st.session_state.daily_fname = None
 if "kw_log" not in st.session_state: st.session_state.kw_log = ""
 if "kw_detail_log" not in st.session_state: st.session_state.kw_detail_log = ""
 if "kw_fname" not in st.session_state: st.session_state.kw_fname = None
+if "kw_df"    not in st.session_state: st.session_state.kw_df    = None
 
 # =====================================================
-# 1행: 데일리(좌) / 키워드(우)
+# 탭: 리포트 생성 / 대시보드
 # =====================================================
-col_daily, col_kw = st.columns([6, 5])
+tab_report, tab_dashboard = st.tabs(["📋 리포트 생성", "📊 대시보드"])
+
+with tab_report:
+ col_daily, col_kw = st.columns([6, 5])
 
 # ── 좌상: 데일리 리포트 ───────────────────────────────────
 with col_daily:
@@ -2006,6 +2014,19 @@ with col_daily:
             st.session_state.saved_path     = fname
             st.session_state.saved_platform = plat
             st.session_state.daily_fname    = fname
+            try:
+                st.session_state.daily_df       = pd.read_excel(fname)
+                st.session_state.daily_d1_saved = str(d1)
+                st.session_state.daily_d2_saved = str(d2)
+                # 비교용: 같은 기간 하루 전 데이터 자동 수집
+                from datetime import timedelta as _td
+                _d1_prev = (datetime.strptime(str(d1), "%Y-%m-%d") - _td(days=1)).strftime("%Y-%m-%d")
+                _d2_prev = (datetime.strptime(str(d2), "%Y-%m-%d") - _td(days=1)).strftime("%Y-%m-%d")
+                _df_prev, _ = build_final_df(platform, _d1_prev, _d2_prev)
+                st.session_state.daily_df_prev = _df_prev if not _df_prev.empty else None
+            except Exception as _e:
+                st.session_state.daily_df = None
+                st.session_state.daily_df_prev = None
 
     if st.session_state.daily_log:
         st.text_area("상태/로그", st.session_state.daily_log, height=180, key="daily_log_display")
@@ -2048,6 +2069,10 @@ with col_kw:
         st.session_state.kw_detail_log = kw_detail
         if kw_fname and os.path.exists(kw_fname):
             st.session_state.kw_fname = kw_fname
+            try:
+                st.session_state.kw_df = pd.read_excel(kw_fname)
+            except Exception:
+                st.session_state.kw_df = None
 
     if st.session_state.kw_log:
         st.text_area("상태(요약)", st.session_state.kw_log, height=120, key="kw_log_display")
@@ -2061,6 +2086,19 @@ with col_kw:
                                file_name=os.path.basename(st.session_state.kw_fname),
                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                key="dl_kw")
+
+# end of tab_report
+
+with tab_dashboard:
+    if st.session_state.daily_df is not None and not st.session_state.daily_df.empty:
+        render_daily_dashboard(
+            st.session_state.daily_df.copy(),
+            st.session_state.daily_df_prev.copy() if st.session_state.daily_df_prev is not None else None,
+            st.session_state.daily_d1_saved,
+            st.session_state.daily_d2_saved,
+        )
+    else:
+        st.info("💡 '리포트 생성' 탭에서 통합 엑셀을 먼저 생성해주세요.")
 
 st.divider()
 
@@ -2161,3 +2199,184 @@ with col_chat:
     if st.button("대화 초기화", key="chat_reset"):
         st.session_state.chat_history = []
         st.rerun()
+
+
+
+# =====================================================
+# 대시보드 탭 (데일리 리포트 시각화)
+# =====================================================
+def render_daily_dashboard(df: pd.DataFrame, df_prev=None, d1=None, d2=None):
+    """데일리 리포트 DataFrame을 대시보드로 시각화"""
+    import plotly.graph_objects as go
+    import plotly.express as px
+
+    # ── 전처리 ────────────────────────────────────────
+    for c in ["노출수","클릭수","총비용","가입","광고비(마크업포함,VAT포함)"]:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+    if df_prev is not None:
+        for c in ["노출수","클릭수","총비용","가입","광고비(마크업포함,VAT포함)"]:
+            if c in df_prev.columns:
+                df_prev[c] = pd.to_numeric(df_prev[c], errors="coerce").fillna(0)
+
+    def _sum(d, col): return int(d[col].sum()) if d is not None and col in d.columns else 0
+    def _delta(cur, prev):
+        if prev == 0: return None
+        return round((cur - prev) / prev * 100, 1)
+    def _badge(val):
+        if val is None: return ""
+        color = "#16a34a" if val >= 0 else "#dc2626"
+        arrow = "▲" if val >= 0 else "▼"
+        return f'<span style="color:{color};font-size:12px;font-weight:600">{arrow} {abs(val)}%</span>'
+
+    period_label = f"{d1} ~ {d2}" if d1 and d2 else ""
+    prev_label   = "전일 대비" if df_prev is not None else ""
+
+    # ── CSS ──────────────────────────────────────────
+    st.markdown("""
+    <style>
+    .db-card {
+        background:white; border-radius:16px; padding:18px 20px;
+        box-shadow:0 2px 12px rgba(124,109,235,0.08);
+        border:1px solid #f0eeff;
+    }
+    .db-label { font-size:12px; color:#9ca3af; font-weight:500; margin-bottom:4px; }
+    .db-value { font-size:24px; font-weight:800; color:#1a1a2e; }
+    .db-unit  { font-size:12px; color:#9ca3af; }
+    .db-sub   { margin-top:4px; font-size:11px; color:#d1d5db; }
+    .section-title { font-size:16px; font-weight:700; color:#1a1a2e; margin:20px 0 10px; }
+    </style>
+    """, unsafe_allow_html=True)
+
+    # 헤더
+    col_h1, col_h2 = st.columns([3,1])
+    with col_h1:
+        st.markdown(f"### 📊 광고 성과 대시보드  <span style='font-size:13px;color:#9ca3af;font-weight:400'>{period_label}</span>", unsafe_allow_html=True)
+    with col_h2:
+        if prev_label:
+            st.markdown(f"<div style='text-align:right;font-size:12px;color:#7C6DEB;padding-top:8px'>🔄 {prev_label} 비교 포함</div>", unsafe_allow_html=True)
+
+    # ── KPI 카드 (총합) ───────────────────────────────
+    st.markdown("<div class='section-title'>전체</div>", unsafe_allow_html=True)
+    total_cost = _sum(df, "광고비(마크업포함,VAT포함)")
+    total_imp  = _sum(df, "노출수")
+    total_clk  = _sum(df, "클릭수")
+    total_conv = _sum(df, "가입")
+
+    p_cost = _sum(df_prev, "광고비(마크업포함,VAT포함)")
+    p_imp  = _sum(df_prev, "노출수")
+    p_clk  = _sum(df_prev, "클릭수")
+    p_conv = _sum(df_prev, "가입")
+
+    c1,c2,c3,c4 = st.columns(4)
+    for col, label, cur, prev, unit in [
+        (c1, "총 광고비",  total_cost, p_cost, "원"),
+        (c2, "총 노출수",  total_imp,  p_imp,  ""),
+        (c3, "총 클릭수",  total_clk,  p_clk,  ""),
+        (c4, "총 전환(가입)", total_conv, p_conv, "건"),
+    ]:
+        d = _delta(cur, prev)
+        with col:
+            st.markdown(f"""
+            <div class="db-card">
+              <div class="db-label">{label}</div>
+              <div class="db-value">{cur:,}<span class="db-unit"> {unit}</span></div>
+              <div class="db-sub">{_badge(d)} <span>전일 {prev:,}{unit}</span></div>
+            </div>""", unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── 매체별 (구글 / 네이버) ────────────────────────
+    st.markdown("<div class='section-title'>매체별</div>", unsafe_allow_html=True)
+    medias = ["구글","네이버"]
+    med_cols = st.columns(len(medias))
+    for i, media in enumerate(medias):
+        cur_m  = df[df["매체"]==media]   if "매체" in df.columns else pd.DataFrame()
+        prev_m = df_prev[df_prev["매체"]==media] if df_prev is not None and "매체" in df_prev.columns else None
+
+        mc = _sum(cur_m,  "광고비(마크업포함,VAT포함)")
+        mi = _sum(cur_m,  "노출수")
+        mk = _sum(cur_m,  "클릭수")
+        mv = _sum(cur_m,  "가입")
+        pc = _sum(prev_m, "광고비(마크업포함,VAT포함)")
+        pv = _sum(prev_m, "가입")
+
+        color = "#2563eb" if media == "구글" else "#16a34a"
+        with med_cols[i]:
+            st.markdown(f"""
+            <div class="db-card">
+              <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+                <span style="background:{'#eff6ff' if media=='구글' else '#f0fdf4'};color:{color};
+                  padding:3px 10px;border-radius:8px;font-size:12px;font-weight:700">{media}</span>
+              </div>
+              <div style="display:flex;gap:16px;flex-wrap:wrap">
+                <div><div class="db-label">광고비</div><div style="font-size:18px;font-weight:800;color:#1a1a2e">{mc:,}원</div>
+                  <div class="db-sub">{_badge(_delta(mc,pc))} 전일 {pc:,}원</div></div>
+                <div><div class="db-label">노출수</div><div style="font-size:18px;font-weight:800;color:#1a1a2e">{mi:,}</div></div>
+                <div><div class="db-label">클릭수</div><div style="font-size:18px;font-weight:800;color:#1a1a2e">{mk:,}</div></div>
+                <div><div class="db-label">가입</div><div style="font-size:18px;font-weight:800;color:#7C6DEB">{mv:,}건</div>
+                  <div class="db-sub">{_badge(_delta(mv,pv))} 전일 {pv:,}건</div></div>
+              </div>
+            </div>""", unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── 서비스별 ─────────────────────────────────────
+    if "서비스" in df.columns:
+        st.markdown("<div class='section-title'>서비스별</div>", unsafe_allow_html=True)
+        services = [s for s in df["서비스"].unique() if str(s).strip() not in ("","nan","None")]
+        svc_cols = st.columns(max(len(services), 1))
+
+        for i, svc in enumerate(sorted(services)):
+            cur_s  = df[df["서비스"]==svc]
+            prev_s = df_prev[df_prev["서비스"]==svc] if df_prev is not None and "서비스" in df_prev.columns else None
+
+            sc = _sum(cur_s,  "광고비(마크업포함,VAT포함)")
+            si = _sum(cur_s,  "노출수")
+            sk = _sum(cur_s,  "클릭수")
+            sv = _sum(cur_s,  "가입")
+            pc = _sum(prev_s, "광고비(마크업포함,VAT포함)")
+            pv = _sum(prev_s, "가입")
+
+            with svc_cols[i % len(svc_cols)]:
+                st.markdown(f"""
+                <div class="db-card">
+                  <div style="font-size:14px;font-weight:700;color:#7C6DEB;margin-bottom:10px">{svc}</div>
+                  <div style="display:flex;gap:14px;flex-wrap:wrap">
+                    <div><div class="db-label">광고비</div><div style="font-size:16px;font-weight:800;color:#1a1a2e">{sc:,}원</div>
+                      <div class="db-sub">{_badge(_delta(sc,pc))} 전일 {pc:,}원</div></div>
+                    <div><div class="db-label">노출수</div><div style="font-size:16px;font-weight:800;color:#1a1a2e">{si:,}</div></div>
+                    <div><div class="db-label">클릭수</div><div style="font-size:16px;font-weight:800;color:#1a1a2e">{sk:,}</div></div>
+                    <div><div class="db-label">가입</div><div style="font-size:16px;font-weight:800;color:#7C6DEB">{sv:,}건</div>
+                      <div class="db-sub">{_badge(_delta(sv,pv))} 전일 {pv:,}건</div></div>
+                  </div>
+                </div>""", unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── 차트: 매체별 광고비 비교 ──────────────────────
+    col_ch1, col_ch2 = st.columns(2)
+
+    with col_ch1:
+        st.markdown("#### 매체별 광고비")
+        med_df = df.groupby("매체")["광고비(마크업포함,VAT포함)"].sum().reset_index()
+        med_df.columns = ["매체","광고비"]
+        fig1 = px.bar(med_df, x="매체", y="광고비",
+                      color="매체", color_discrete_map={"구글":"#4F86F7","네이버":"#03C75A"},
+                      text="광고비")
+        fig1.update_traces(texttemplate="%{text:,}원", textposition="outside")
+        fig1.update_layout(height=260, margin=dict(l=0,r=0,t=20,b=0),
+                           plot_bgcolor="white", paper_bgcolor="white",
+                           showlegend=False, font=dict(size=12),
+                           yaxis=dict(showgrid=True, gridcolor="#f9f8ff"))
+        st.plotly_chart(fig1, use_container_width=True)
+
+    with col_ch2:
+        if "서비스" in df.columns:
+            st.markdown("#### 서비스별 광고비")
+            svc_df = df.groupby("서비스")["광고비(마크업포함,VAT포함)"].sum().reset_index()
+            svc_df.columns = ["서비스","광고비"]
+            fig2 = px.pie(svc_df, values="광고비", names="서비스", hole=0.5,
+                          color_discrete_sequence=["#7C6DEB","#A89DF0","#C8C0F7","#E4E0FB","#F5F3FF"])
+            fig2.update_layout(height=260, margin=dict(l=0,r=0,t=20,b=0), font=dict(size=11))
+            st.plotly_chart(fig2, use_container_width=True)
