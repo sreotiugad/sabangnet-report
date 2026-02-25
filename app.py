@@ -1942,189 +1942,227 @@ section[data-testid="stSidebar"] {{
 # 대시보드 탭 (데일리 리포트 시각화)
 # =====================================================
 def render_daily_dashboard(df: pd.DataFrame, df_prev=None, d1=None, d2=None):
-    """데일리 리포트 DataFrame을 대시보드로 시각화"""
+    """데일리 리포트 시각화 - 서비스별 캠페인유형 테이블 중심"""
     import plotly.graph_objects as go
-    import plotly.express as px
 
-    # ── 전처리 ────────────────────────────────────────
-    for c in ["노출수","클릭수","총비용","가입","광고비(마크업포함,VAT포함)"]:
+    NUM_COLS = ["노출수","클릭수","총비용","가입","광고비(마크업포함,VAT포함)"]
+    for c in NUM_COLS:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
     if df_prev is not None:
-        for c in ["노출수","클릭수","총비용","가입","광고비(마크업포함,VAT포함)"]:
+        for c in NUM_COLS:
             if c in df_prev.columns:
                 df_prev[c] = pd.to_numeric(df_prev[c], errors="coerce").fillna(0)
 
-    def _sum(d, col): return int(d[col].sum()) if d is not None and col in d.columns else 0
-    def _delta(cur, prev):
-        if prev == 0: return None
-        return round((cur - prev) / prev * 100, 1)
-    def _badge(val):
-        if val is None: return ""
-        color = "#16a34a" if val >= 0 else "#dc2626"
-        arrow = "▲" if val >= 0 else "▼"
-        return f'<span style="color:{color};font-size:12px;font-weight:600">{arrow} {abs(val)}%</span>'
+    COST = "광고비(마크업포함,VAT포함)"
+
+    def _s(d, col):
+        return float(d[col].sum()) if d is not None and col in d.columns and len(d) > 0 else 0.0
+    def _pct(a, b): return f"{a/b*100:.2f}%" if b > 0 else "0%"
+    def _cpc(cost, clk): return f"{int(cost/clk):,}원" if clk > 0 else "-"
+    def _cpa(cost, conv): return f"{int(cost/conv):,}원" if conv > 0 else "-"
+    def _delta_badge(cur, prev):
+        if prev == 0: return ""
+        pct = (cur - prev) / prev * 100
+        color = "#16a34a" if pct >= 0 else "#dc2626"
+        arrow = "▲" if pct >= 0 else "▼"
+        return f'<span style="color:{color};font-size:11px;font-weight:600">{arrow}{abs(pct):.1f}%</span>'
 
     period_label = f"{d1} ~ {d2}" if d1 and d2 else ""
-    prev_label   = "전일 대비" if df_prev is not None else ""
 
     # ── CSS ──────────────────────────────────────────
     st.markdown("""
     <style>
-    .db-card {
-        background:white; border-radius:16px; padding:18px 20px;
-        box-shadow:0 2px 12px rgba(124,109,235,0.08);
-        border:1px solid #f0eeff;
+    @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;900&display=swap');
+    .dash-wrap { font-family: 'Noto Sans KR', sans-serif; }
+
+    .hero-kpi {
+        background: linear-gradient(135deg, #1e1b4b 0%, #312e81 50%, #4c1d95 100%);
+        border-radius: 20px; padding: 24px 28px; color: white; margin-bottom: 20px;
     }
-    .db-label { font-size:12px; color:#9ca3af; font-weight:500; margin-bottom:4px; }
-    .db-value { font-size:24px; font-weight:800; color:#1a1a2e; }
-    .db-unit  { font-size:12px; color:#9ca3af; }
-    .db-sub   { margin-top:4px; font-size:11px; color:#d1d5db; }
-    .section-title { font-size:16px; font-weight:700; color:#1a1a2e; margin:20px 0 10px; }
+    .hero-kpi-grid { display: grid; grid-template-columns: repeat(4,1fr); gap: 20px; margin-top: 16px; }
+    .hero-kpi-item { border-left: 1px solid rgba(255,255,255,0.15); padding-left: 16px; }
+    .hero-kpi-item:first-child { border-left: none; padding-left: 0; }
+    .hk-label { font-size: 11px; color: rgba(255,255,255,0.6); font-weight: 500; letter-spacing: 0.05em; text-transform: uppercase; }
+    .hk-value { font-size: 26px; font-weight: 900; color: white; line-height: 1.1; margin: 4px 0 2px; }
+    .hk-unit  { font-size: 12px; color: rgba(255,255,255,0.5); }
+    .hk-sub   { font-size: 11px; color: rgba(255,255,255,0.45); margin-top: 2px; }
+
+    .svc-block { background: white; border-radius: 16px; padding: 20px 22px; margin-bottom: 14px;
+                 box-shadow: 0 2px 16px rgba(0,0,0,0.05); border: 1px solid #f1f0ff; }
+    .svc-name  { font-size: 15px; font-weight: 800; color: #1e1b4b; margin-bottom: 14px;
+                 padding-bottom: 10px; border-bottom: 2px solid #ede9fe; display: flex; align-items: center; gap: 8px; }
+    .svc-dot   { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+
+    .ct-table  { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .ct-table th { background: #f8f7ff; color: #6d28d9; font-size: 10px; font-weight: 700;
+                   text-align: right; padding: 7px 10px; letter-spacing: 0.04em; white-space: nowrap; }
+    .ct-table th:first-child, .ct-table th:nth-child(2) { text-align: left; }
+    .ct-table td { padding: 9px 10px; border-bottom: 1px solid #f5f3ff; text-align: right;
+                   color: #374151; font-weight: 500; white-space: nowrap; }
+    .ct-table td:first-child, .ct-table td:nth-child(2) { text-align: left; }
+    .ct-table tr:last-child td { border-bottom: none; font-weight: 700; background: #faf8ff; }
+    .ct-table tr:hover td { background: #f8f7ff; }
+
+    .badge-n { background:#dcfce7; color:#15803d; padding:2px 8px; border-radius:6px; font-size:10px; font-weight:700; }
+    .badge-g { background:#fee2e2; color:#dc2626; padding:2px 8px; border-radius:6px; font-size:10px; font-weight:700; }
+    .badge-t { background:#fff7ed; color:#c2410c; padding:2px 8px; border-radius:6px; font-size:10px; font-weight:700; }
+    .badge-d { background:#f0fdf4; color:#166534; padding:2px 8px; border-radius:6px; font-size:10px; font-weight:700; }
+
+    .conv-hi  { color: #7c3aed; font-weight: 800; font-size: 13px; }
+    .cost-num { color: #1e40af; font-weight: 700; }
+
+    .period-chip { background: #ede9fe; color: #5b21b6; padding: 3px 10px; border-radius: 20px;
+                   font-size: 11px; font-weight: 600; }
     </style>
+    <div class="dash-wrap">
     """, unsafe_allow_html=True)
 
-    # 헤더
-    col_h1, col_h2 = st.columns([3,1])
-    with col_h1:
-        st.markdown(f"### 📊 광고 성과 대시보드  <span style='font-size:13px;color:#9ca3af;font-weight:400'>{period_label}</span>", unsafe_allow_html=True)
-    with col_h2:
-        if prev_label:
-            st.markdown(f"<div style='text-align:right;font-size:12px;color:#7C6DEB;padding-top:8px'>🔄 {prev_label} 비교 포함</div>", unsafe_allow_html=True)
+    # ── 헤더 + 총합 KPI ─────────────────────────────
+    tc   = _s(df,      COST);   pc   = _s(df_prev, COST)
+    ti   = _s(df,      "노출수"); pi   = _s(df_prev, "노출수")
+    tk   = _s(df,      "클릭수"); pk   = _s(df_prev, "클릭수")
+    tv   = _s(df,      "가입");   pv   = _s(df_prev, "가입")
 
-    # ── KPI 카드 (총합) ───────────────────────────────
-    st.markdown("<div class='section-title'>전체</div>", unsafe_allow_html=True)
-    total_cost = _sum(df, "광고비(마크업포함,VAT포함)")
-    total_imp  = _sum(df, "노출수")
-    total_clk  = _sum(df, "클릭수")
-    total_conv = _sum(df, "가입")
+    st.markdown(f"""
+    <div class="hero-kpi">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div>
+          <span style="font-size:18px;font-weight:900;letter-spacing:-0.5px">📊 광고 성과 대시보드</span>
+          <span style="margin-left:10px" class="period-chip">{period_label}</span>
+        </div>
+        {"<span style='font-size:11px;color:rgba(255,255,255,0.5)'>🔄 전일 대비 비교 포함</span>" if df_prev is not None else ""}
+      </div>
+      <div class="hero-kpi-grid">
+        <div class="hero-kpi-item">
+          <div class="hk-label">총 광고비</div>
+          <div class="hk-value">{int(tc):,}<span class="hk-unit">원</span></div>
+          <div class="hk-sub">{_delta_badge(tc,pc)} 전일 {int(pc):,}원</div>
+        </div>
+        <div class="hero-kpi-item">
+          <div class="hk-label">총 노출수</div>
+          <div class="hk-value">{int(ti):,}</div>
+          <div class="hk-sub">{_delta_badge(ti,pi)} 전일 {int(pi):,}</div>
+        </div>
+        <div class="hero-kpi-item">
+          <div class="hk-label">총 클릭수</div>
+          <div class="hk-value">{int(tk):,}</div>
+          <div class="hk-sub">{_delta_badge(tk,pk)} 전일 {int(pk):,}</div>
+        </div>
+        <div class="hero-kpi-item">
+          <div class="hk-label">총 가입전환</div>
+          <div class="hk-value" style="color:#a78bfa">{int(tv):,}<span class="hk-unit">건</span></div>
+          <div class="hk-sub">{_delta_badge(tv,pv)} 전일 {int(pv):,}건 · CPA {_cpa(tc,tv)}</div>
+        </div>
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
 
-    p_cost = _sum(df_prev, "광고비(마크업포함,VAT포함)")
-    p_imp  = _sum(df_prev, "노출수")
-    p_clk  = _sum(df_prev, "클릭수")
-    p_conv = _sum(df_prev, "가입")
+    # ── 서비스별 블록 ─────────────────────────────────
+    SVC_COLORS = {"사방넷":"#7c3aed","사방넷미니":"#0891b2","풀필먼트":"#059669"}
+    SVC_DOTS   = {"사방넷":"#7c3aed","사방넷미니":"#0891b2","풀필먼트":"#059669"}
 
-    c1,c2,c3,c4 = st.columns(4)
-    for col, label, cur, prev, unit in [
-        (c1, "총 광고비",  total_cost, p_cost, "원"),
-        (c2, "총 노출수",  total_imp,  p_imp,  ""),
-        (c3, "총 클릭수",  total_clk,  p_clk,  ""),
-        (c4, "총 전환(가입)", total_conv, p_conv, "건"),
-    ]:
-        d = _delta(cur, prev)
-        with col:
-            st.markdown(f"""
-            <div class="db-card">
-              <div class="db-label">{label}</div>
-              <div class="db-value">{cur:,}<span class="db-unit"> {unit}</span></div>
-              <div class="db-sub">{_badge(d)} <span>전일 {prev:,}{unit}</span></div>
-            </div>""", unsafe_allow_html=True)
+    MEDIA_BADGE = {
+        "네이버": '<span class="badge-n">네이버</span>',
+        "구글":   '<span class="badge-g">구글</span>',
+        "타블라": '<span class="badge-t">타불라</span>',
+        "타불라": '<span class="badge-t">타불라</span>',
+    }
 
-    st.markdown("<br>", unsafe_allow_html=True)
+    if "서비스" not in df.columns or "캠페인유형" not in df.columns:
+        st.warning("서비스 또는 캠페인유형 컬럼이 없습니다.")
+        return
 
-    # ── 매체별 (구글 / 네이버) ────────────────────────
-    st.markdown("<div class='section-title'>매체별</div>", unsafe_allow_html=True)
-    medias = ["구글","네이버"]
-    med_cols = st.columns(len(medias))
-    for i, media in enumerate(medias):
-        cur_m  = df[df["매체"]==media]   if "매체" in df.columns else pd.DataFrame()
-        prev_m = df_prev[df_prev["매체"]==media] if df_prev is not None and "매체" in df_prev.columns else None
-
-        mc = _sum(cur_m,  "광고비(마크업포함,VAT포함)")
-        mi = _sum(cur_m,  "노출수")
-        mk = _sum(cur_m,  "클릭수")
-        mv = _sum(cur_m,  "가입")
-        pc = _sum(prev_m, "광고비(마크업포함,VAT포함)")
-        pv = _sum(prev_m, "가입")
-
-        color = "#2563eb" if media == "구글" else "#16a34a"
-        with med_cols[i]:
-            st.markdown(f"""
-            <div class="db-card">
-              <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
-                <span style="background:{'#eff6ff' if media=='구글' else '#f0fdf4'};color:{color};
-                  padding:3px 10px;border-radius:8px;font-size:12px;font-weight:700">{media}</span>
-              </div>
-              <div style="display:flex;gap:16px;flex-wrap:wrap">
-                <div><div class="db-label">광고비</div><div style="font-size:18px;font-weight:800;color:#1a1a2e">{mc:,}원</div>
-                  <div class="db-sub">{_badge(_delta(mc,pc))} 전일 {pc:,}원</div></div>
-                <div><div class="db-label">노출수</div><div style="font-size:18px;font-weight:800;color:#1a1a2e">{mi:,}</div></div>
-                <div><div class="db-label">클릭수</div><div style="font-size:18px;font-weight:800;color:#1a1a2e">{mk:,}</div></div>
-                <div><div class="db-label">가입</div><div style="font-size:18px;font-weight:800;color:#7C6DEB">{mv:,}건</div>
-                  <div class="db-sub">{_badge(_delta(mv,pv))} 전일 {pv:,}건</div></div>
-              </div>
-            </div>""", unsafe_allow_html=True)
-
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    # ── 서비스별 x 매체별 ────────────────────────────────
-    if "서비스" in df.columns and "매체" in df.columns:
-        st.markdown("<div class='section-title'>서비스별</div>", unsafe_allow_html=True)
+    services = [s for s in ["사방넷","사방넷미니","풀필먼트"] if s in df["서비스"].unique()]
+    if not services:
         services = sorted([s for s in df["서비스"].unique() if str(s).strip() not in ("","nan","None")])
-        media_order = ["구글","네이버"]
 
-        for svc in services:
-            st.markdown(f"<div style='font-size:14px;font-weight:700;color:#7C6DEB;margin:10px 0 6px'>{svc}</div>", unsafe_allow_html=True)
-            svc_med_cols = st.columns(len(media_order))
+    for svc in services:
+        svc_df = df[df["서비스"]==svc]
+        svc_prev = df_prev[df_prev["서비스"]==svc] if df_prev is not None and "서비스" in df_prev.columns else None
 
-            for j, media in enumerate(media_order):
-                cur_sm  = df[(df["서비스"]==svc) & (df["매체"]==media)]
-                prev_sm = df_prev[(df_prev["서비스"]==svc) & (df_prev["매체"]==media)] if df_prev is not None and "서비스" in df_prev.columns else None
+        sc = _s(svc_df, COST); sk = _s(svc_df, "클릭수")
+        si = _s(svc_df, "노출수"); sv = _s(svc_df, "가입")
+        psc = _s(svc_prev, COST); psv = _s(svc_prev, "가입")
 
-                sc = _sum(cur_sm,  "광고비(마크업포함,VAT포함)")
-                si = _sum(cur_sm,  "노출수")
-                sk = _sum(cur_sm,  "클릭수")
-                sv = _sum(cur_sm,  "가입")
-                pc = _sum(prev_sm, "광고비(마크업포함,VAT포함)")
-                pv = _sum(prev_sm, "가입")
+        dot_color = SVC_COLORS.get(svc, "#6d28d9")
 
-                badge_bg    = "#fff0f0" if media == "구글" else "#f0fdf4"
-                badge_color = "#dc2626" if media == "구글" else "#16a34a"
+        # 캠페인유형 x 매체 집계
+        grp = svc_df.groupby(["매체","캠페인유형"], as_index=False).agg(
+            노출=("노출수","sum"), 클릭=("클릭수","sum"),
+            광고비=(COST,"sum"), 가입=("가입","sum")
+        ).sort_values("광고비", ascending=False)
 
-                with svc_med_cols[j]:
-                    st.markdown(f"""
-                    <div class="db-card">
-                      <div style="margin-bottom:8px">
-                        <span style="background:{badge_bg};color:{badge_color};padding:3px 10px;border-radius:8px;font-size:12px;font-weight:700">{media}</span>
-                      </div>
-                      <div style="display:flex;gap:12px;flex-wrap:wrap">
-                        <div><div class="db-label">광고비</div><div style="font-size:15px;font-weight:800;color:#1a1a2e">{sc:,}원</div>
-                          <div class="db-sub">{_badge(_delta(sc,pc))} 전일 {pc:,}원</div></div>
-                        <div><div class="db-label">노출수</div><div style="font-size:15px;font-weight:800;color:#1a1a2e">{si:,}</div></div>
-                        <div><div class="db-label">클릭수</div><div style="font-size:15px;font-weight:800;color:#1a1a2e">{sk:,}</div></div>
-                        <div><div class="db-label">가입</div><div style="font-size:15px;font-weight:800;color:#7C6DEB">{sv:,}건</div>
-                          <div class="db-sub">{_badge(_delta(sv,pv))} 전일 {pv:,}건</div></div>
-                      </div>
-                    </div>""", unsafe_allow_html=True)
+        # 이전 데이터도 집계
+        if svc_prev is not None and "캠페인유형" in svc_prev.columns:
+            grp_prev = svc_prev.groupby(["매체","캠페인유형"], as_index=False).agg(
+                광고비_prev=(COST,"sum"), 가입_prev=("가입","sum")
+            )
+            grp = grp.merge(grp_prev, on=["매체","캠페인유형"], how="left")
+            grp["광고비_prev"] = grp["광고비_prev"].fillna(0)
+            grp["가입_prev"]   = grp["가입_prev"].fillna(0)
+        else:
+            grp["광고비_prev"] = 0.0
+            grp["가입_prev"]   = 0.0
 
-    st.markdown("<br>", unsafe_allow_html=True)
+        # 테이블 행 생성
+        rows_html = ""
+        for _, row in grp.iterrows():
+            media_badge = MEDIA_BADGE.get(str(row["매체"]), f'<span style="background:#f3f4f6;color:#374151;padding:2px 8px;border-radius:6px;font-size:10px;font-weight:700">{row["매체"]}</span>')
+            ctr  = _pct(row["클릭"], row["노출"])
+            cpc  = _cpc(row["광고비"], row["클릭"])
+            cpa  = _cpa(row["광고비"], row["가입"])
+            rate = _pct(row["가입"], row["클릭"])
+            cost_d = _delta_badge(row["광고비"], row["광고비_prev"])
+            conv_d = _delta_badge(row["가입"], row["가입_prev"])
+            conv_cell = f'<span class="conv-hi">{int(row["가입"]):,}</span>' if row["가입"] > 0 else '<span style="color:#d1d5db">-</span>'
 
-    # ── 차트: 매체별 광고비 비교 ──────────────────────
-    col_ch1, col_ch2 = st.columns(2)
+            rows_html += f"""<tr>
+              <td>{media_badge}</td>
+              <td>{row['캠페인유형']}</td>
+              <td>{int(row['노출']):,}</td>
+              <td>{int(row['클릭']):,}</td>
+              <td style="color:#6b7280">{ctr}</td>
+              <td style="color:#6b7280">{cpc}</td>
+              <td><span class="cost-num">{int(row['광고비']):,}원</span><br><span style="font-size:10px">{cost_d}</span></td>
+              <td>{conv_cell}<br><span style="font-size:10px">{conv_d}</span></td>
+              <td style="color:#6b7280">{rate}</td>
+              <td style="color:#6b7280">{cpa}</td>
+            </tr>"""
 
-    with col_ch1:
-        st.markdown("#### 매체별 광고비")
-        med_df = df.groupby("매체")["광고비(마크업포함,VAT포함)"].sum().reset_index()
-        med_df.columns = ["매체","광고비"]
-        fig1 = px.bar(med_df, x="매체", y="광고비",
-                      color="매체", color_discrete_map={"구글":"#4F86F7","네이버":"#03C75A"},
-                      text="광고비")
-        fig1.update_traces(texttemplate="%{text:,}원", textposition="outside")
-        fig1.update_layout(height=260, margin=dict(l=0,r=0,t=20,b=0),
-                           plot_bgcolor="white", paper_bgcolor="white",
-                           showlegend=False, font=dict(size=12),
-                           yaxis=dict(showgrid=True, gridcolor="#f9f8ff"))
-        st.plotly_chart(fig1, use_container_width=True)
+        # 합계 행
+        rows_html += f"""<tr>
+          <td colspan="2" style="text-align:left;color:#5b21b6">합계</td>
+          <td>{int(si):,}</td>
+          <td>{int(sk):,}</td>
+          <td style="color:#6b7280">{_pct(sk,si)}</td>
+          <td style="color:#6b7280">{_cpc(sc,sk)}</td>
+          <td><span class="cost-num">{int(sc):,}원</span><br><span style="font-size:10px">{_delta_badge(sc,psc)}</span></td>
+          <td><span class="conv-hi">{int(sv):,}</span><br><span style="font-size:10px">{_delta_badge(sv,psv)}</span></td>
+          <td style="color:#6b7280">{_pct(sv,sk)}</td>
+          <td style="color:#6b7280">{_cpa(sc,sv)}</td>
+        </tr>"""
 
-    with col_ch2:
-        if "서비스" in df.columns:
-            st.markdown("#### 서비스별 광고비")
-            svc_df = df.groupby("서비스")["광고비(마크업포함,VAT포함)"].sum().reset_index()
-            svc_df.columns = ["서비스","광고비"]
-            fig2 = px.pie(svc_df, values="광고비", names="서비스", hole=0.5,
-                          color_discrete_sequence=["#7C6DEB","#A89DF0","#C8C0F7","#E4E0FB","#F5F3FF"])
-            fig2.update_layout(height=260, margin=dict(l=0,r=0,t=20,b=0), font=dict(size=11))
-            st.plotly_chart(fig2, use_container_width=True)
+        st.markdown(f"""
+        <div class="svc-block">
+          <div class="svc-name">
+            <span class="svc-dot" style="background:{dot_color}"></span>
+            {svc}
+          </div>
+          <table class="ct-table">
+            <thead><tr>
+              <th>매체</th><th>캠페인유형</th>
+              <th>노출</th><th>클릭</th><th>CTR</th><th>CPC</th>
+              <th>광고비</th><th>가입</th><th>가입율</th><th>CPA</th>
+            </tr></thead>
+            <tbody>{rows_html}</tbody>
+          </table>
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
 
 
 
