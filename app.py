@@ -498,8 +498,8 @@ def get_n_keyword_data_report(d_from, d_to, report_tp="AD", logs=None) -> pd.Dat
         logs.append(f"[NAVER] name_maps: camp={len(camp_map)}, grp={len(grp_map)}, kw={len(kw_map)}")
 
         for day in days:
-            # AD 리포트 (노출/클릭/비용)
-            df_ad = _fetch_naver_report_day(acc, day, "AD", camp_map, grp_map, kw_map, logs)
+            # 노출/클릭/비용 리포트
+            df_ad = _fetch_naver_report_day(acc, day, report_tp, camp_map, grp_map, kw_map, logs)
             if df_ad is None:
                 continue
 
@@ -629,6 +629,19 @@ def _fetch_naver_report_day(acc, day, report_tp, camp_map, grp_map, kw_map, logs
             ]
             if col_count >= 15:
                 base_cols.append("cpConv")
+        elif report_tp == "EXPKEYWORD":
+            # EXPKEYWORD: 검색어 기준 리포트 (keywordId 없이 keywordName 직접 제공)
+            base_cols = [
+                "statDt","customerId","campaignId","adgroupId",
+                "keywordName","bidAmt","pcMblTp",
+                "impCnt","clkCnt","ccnt","salesAmt","avgRnk"
+            ]
+            if col_count >= 13:
+                base_cols = [
+                    "statDt","customerId","campaignId","adgroupId",
+                    "keywordName","bidAmt","pcMblTp",
+                    "impCnt","clkCnt","convAmt","salesAmt","avgRnk","extra1"
+                ][:col_count]
         else:  # AD_CONVERSION - 실제 13컬럼
             # statDt, customerId, campaignId, adgroupId, keywordId, adId, bsnId, bidAmt, pcMblTp, clkCnt, convType, ccnt, (미확인)
             base_cols = [
