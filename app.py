@@ -2152,135 +2152,14 @@ if "kw_fname" not in st.session_state: st.session_state.kw_fname = None
 if "kw_df"    not in st.session_state: st.session_state.kw_df    = None
 
 # =====================================================
-# 탭: 리포트 생성 / 대시보드
+# 메인 레이아웃: 좌(대시보드) | 우(리포트+코멘트+챗봇)
 # =====================================================
-tab_dashboard, tab_report = st.tabs(["📊 대시보드", "📋 리포트 생성"])
+col_left, col_right = st.columns([6, 4])
 
-with tab_report:
- col_daily, col_kw = st.columns([6, 5])
-
-# ── 좌상: 데일리 리포트 ───────────────────────────────────
-with col_daily:
-    st.markdown("## 📌 데일리 리포트")
-
-    platform = st.radio("플랫폼", ["Google", "Naver", "Google+Naver"],
-                        index=2, horizontal=True, key="daily_platform")
-
-    preset = st.selectbox("기간", ["주간(월~일)", "어제", "지난 7일", "지난 30일", "이번 달", "직접선택"],
-                          index=1, key="daily_preset")
-
-    # preset 바뀌면 날짜 자동 업데이트
-    if preset != st.session_state.daily_preset_prev and preset != "직접선택":
-        r = preset_range(preset)
-        st.session_state.daily_d1 = datetime.strptime(r[0][:10], "%Y-%m-%d").date()
-        st.session_state.daily_d2 = datetime.strptime(r[1][:10], "%Y-%m-%d").date()
-        st.session_state.daily_preset_prev = preset
-        st.rerun()
-
-    col_d1, col_d2 = st.columns(2)
-    with col_d1:
-        d1 = st.date_input("시작일", key="daily_d1")
-    with col_d2:
-        d2 = st.date_input("종료일", key="daily_d2")
-
-    tabula_file = st.file_uploader("📎 타뷸라 raw 파일 업로드 (선택, CSV or XLSX)",
-                                   type=["csv","xlsx"], key="tabula_upload")
-
-    if st.button("통합 엑셀 생성", type="primary", key="btn_daily"):
-        # 타뷸라 파일 임시 저장
-        tabula_path = None
-        if tabula_file:
-            import tempfile
-            suffix = ".xlsx" if tabula_file.name.endswith(".xlsx") else ".csv"
-            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-                tmp.write(tabula_file.read())
-                tabula_path = tmp.name
-
-        with st.spinner("데이터 수집 중..."):
-            log_msg, fname, saved, plat = run_all(
-                platform, str(d1), str(d2), tabula_path
-            )
-        st.session_state.daily_log = log_msg
-        if fname and os.path.exists(fname):
-            st.session_state.saved_path     = fname
-            st.session_state.saved_platform = plat
-            st.session_state.daily_fname    = fname
-            try:
-                st.session_state.daily_df       = pd.read_excel(fname)
-                st.session_state.daily_d1_saved = str(d1)
-                st.session_state.daily_d2_saved = str(d2)
-                # 비교용: 같은 기간 하루 전 데이터 자동 수집
-                from datetime import timedelta as _td
-                _d1_prev = (datetime.strptime(str(d1), "%Y-%m-%d") - _td(days=1)).strftime("%Y-%m-%d")
-                _d2_prev = (datetime.strptime(str(d2), "%Y-%m-%d") - _td(days=1)).strftime("%Y-%m-%d")
-                _df_prev, _ = build_final_df(platform, _d1_prev, _d2_prev)
-                st.session_state.daily_df_prev = _df_prev if not _df_prev.empty else None
-            except Exception as _e:
-                st.session_state.daily_df = None
-                st.session_state.daily_df_prev = None
-
-    if st.session_state.daily_log:
-        st.text_area("상태/로그", st.session_state.daily_log, height=180, key="daily_log_display")
-
-    if st.session_state.daily_fname and os.path.exists(st.session_state.daily_fname):
-        with open(st.session_state.daily_fname, "rb") as f:
-            st.download_button("📥 통합 엑셀 다운로드", f,
-                               file_name=os.path.basename(st.session_state.daily_fname),
-                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                               key="dl_daily")
-
-# ── 우상: 키워드 성과 ─────────────────────────────────────
-with col_kw:
-    st.markdown("## 🔎 키워드 성과")
-
-    kw_platform = st.radio("플랫폼", ["Google", "Naver", "Google+Naver"],
-                           index=2, horizontal=True, key="kw_platform")
-
-    kw_preset = st.selectbox("기간", ["주간(월~일)", "어제", "지난 7일", "지난 30일", "이번 달", "직접선택"],
-                             index=0, key="kw_preset")
-
-    # preset 바뀌면 날짜 자동 업데이트
-    if kw_preset != st.session_state.kw_preset_prev and kw_preset != "직접선택":
-        kr = preset_range(kw_preset)
-        st.session_state.kw_d1 = datetime.strptime(kr[0][:10], "%Y-%m-%d").date()
-        st.session_state.kw_d2 = datetime.strptime(kr[1][:10], "%Y-%m-%d").date()
-        st.session_state.kw_preset_prev = kw_preset
-        st.rerun()
-
-    col_k1, col_k2 = st.columns(2)
-    with col_k1:
-        kw_d1 = st.date_input("시작일", key="kw_d1")
-    with col_k2:
-        kw_d2 = st.date_input("종료일", key="kw_d2")
-
-    if st.button("키워드 성과 엑셀 생성", type="primary", key="btn_kw"):
-        with st.spinner("키워드 데이터 수집 중..."):
-            kw_summary, kw_detail, kw_fname = run_keyword_report(kw_platform, str(kw_d1), str(kw_d2))
-        st.session_state.kw_log = kw_summary
-        st.session_state.kw_detail_log = kw_detail
-        if kw_fname and os.path.exists(kw_fname):
-            st.session_state.kw_fname = kw_fname
-            try:
-                st.session_state.kw_df = pd.read_excel(kw_fname)
-            except Exception:
-                st.session_state.kw_df = None
-
-    if st.session_state.kw_log:
-        st.text_area("상태(요약)", st.session_state.kw_log, height=120, key="kw_log_display")
-    if st.session_state.kw_detail_log:
-        with st.expander("상세 로그 보기"):
-            st.text(st.session_state.kw_detail_log)
-
-    if st.session_state.kw_fname and os.path.exists(st.session_state.kw_fname):
-        with open(st.session_state.kw_fname, "rb") as f:
-            st.download_button("📥 키워드 성과 다운로드", f,
-                               file_name=os.path.basename(st.session_state.kw_fname),
-                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                               key="dl_kw")
-
-# end of tab_report
-
-with tab_dashboard:
+# ══════════════════════════════════════════════════
+# 왼쪽: 대시보드
+# ══════════════════════════════════════════════════
+with col_left:
     if st.session_state.daily_df is not None and not st.session_state.daily_df.empty:
         render_daily_dashboard(
             st.session_state.daily_df.copy(),
@@ -2289,104 +2168,219 @@ with tab_dashboard:
             st.session_state.daily_d2_saved,
         )
     else:
-        st.info("💡 '리포트 생성' 탭에서 통합 엑셀을 먼저 생성해주세요.")
+        st.markdown("""
+        <div style="background:white;border-radius:20px;padding:40px;text-align:center;
+                    border:2px dashed #e0d9ff;margin-top:20px">
+          <div style="font-size:40px;margin-bottom:12px">📊</div>
+          <div style="font-size:16px;font-weight:700;color:#7C6DEB;margin-bottom:6px">대시보드</div>
+          <div style="font-size:13px;color:#9ca3af">오른쪽에서 데일리 리포트를 생성하면<br>여기에 성과가 표시됩니다</div>
+        </div>
+        """, unsafe_allow_html=True)
 
-st.divider()
+# ══════════════════════════════════════════════════
+# 오른쪽: 리포트 생성 탭 + 코멘트 + 챗봇
+# ══════════════════════════════════════════════════
+with col_right:
 
-# =====================================================
-# 2행: 코멘트(좌) / 챗봇(우)
-# =====================================================
-col_comment, col_chat = st.columns([6, 5])
+    # ── 상단: 데일리리포트 / 키워드 탭 ──────────────
+    tab_daily, tab_kw = st.tabs(["📌 데일리 리포트", "🔎 키워드 성과"])
 
-# ── 좌하: 데일리 코멘트 ──────────────────────────────────
-with col_comment:
-    st.markdown("## ✅ 데일리 코멘트")
+    with tab_daily:
+        platform = st.radio("플랫폼", ["Google", "Naver", "Google+Naver"],
+                            index=2, horizontal=True, key="daily_platform")
 
-    compare_mode = st.radio("비교 기준",
-                            ["전일(D-1) 비교", "전주 동요일(D-7) 비교"],
-                            horizontal=True, key="compare_mode")
+        preset = st.selectbox("기간", ["주간(월~일)", "어제", "지난 7일", "지난 30일", "이번 달", "직접선택"],
+                              index=1, key="daily_preset")
 
-    manual_actions = st.text_area("액션/메모 (옵션)",
-                                  placeholder="예: 예산 상향 조정 후 모니터링 예정",
-                                  height=80, key="manual_actions")
+        if preset != st.session_state.daily_preset_prev and preset != "직접선택":
+            r = preset_range(preset)
+            st.session_state.daily_d1 = datetime.strptime(r[0][:10], "%Y-%m-%d").date()
+            st.session_state.daily_d2 = datetime.strptime(r[1][:10], "%Y-%m-%d").date()
+            st.session_state.daily_preset_prev = preset
+            st.rerun()
 
-    include_kw = st.checkbox("키워드 인사이트 포함", value=False, key="include_kw_for_comment")
+        col_d1, col_d2 = st.columns(2)
+        with col_d1:
+            d1 = st.date_input("시작일", key="daily_d1")
+        with col_d2:
+            d2 = st.date_input("종료일", key="daily_d2")
 
-    if st.button("데일리 코멘트 생성", key="btn_comment", type="primary"):
-        if not st.session_state.saved_path:
-            st.warning("먼저 통합 엑셀을 생성해주세요")
-        else:
-            with st.spinner("코멘트 생성 중..."):
+        tabula_file = st.file_uploader("📎 타뷸라 raw 파일 (선택)",
+                                       type=["csv","xlsx"], key="tabula_upload")
+
+        if st.button("통합 엑셀 생성", type="primary", key="btn_daily"):
+            tabula_path = None
+            if tabula_file:
+                import tempfile
+                suffix = ".xlsx" if tabula_file.name.endswith(".xlsx") else ".csv"
+                with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                    tmp.write(tabula_file.read())
+                    tabula_path = tmp.name
+
+            with st.spinner("데이터 수집 중..."):
+                log_msg, fname, saved, plat = run_all(
+                    platform, str(d1), str(d2), tabula_path
+                )
+            st.session_state.daily_log = log_msg
+            if fname and os.path.exists(fname):
+                st.session_state.saved_path     = fname
+                st.session_state.saved_platform = plat
+                st.session_state.daily_fname    = fname
                 try:
-                    st.session_state.comment_out = generate_daily_comment_from_excel(
-                        st.session_state.saved_path,
-                        st.session_state.saved_platform,
-                        compare_mode,
-                        manual_actions or "",
-                        include_kw=include_kw
-                    )
+                    st.session_state.daily_df       = pd.read_excel(fname)
+                    st.session_state.daily_d1_saved = str(d1)
+                    st.session_state.daily_d2_saved = str(d2)
+                    from datetime import timedelta as _td
+                    _d1_prev = (datetime.strptime(str(d1), "%Y-%m-%d") - _td(days=1)).strftime("%Y-%m-%d")
+                    _d2_prev = (datetime.strptime(str(d2), "%Y-%m-%d") - _td(days=1)).strftime("%Y-%m-%d")
+                    _df_prev, _ = build_final_df(platform, _d1_prev, _d2_prev)
+                    st.session_state.daily_df_prev = _df_prev if not _df_prev.empty else None
+                except Exception as _e:
+                    st.session_state.daily_df = None
+                    st.session_state.daily_df_prev = None
+
+        if st.session_state.daily_log:
+            with st.expander("📋 로그 보기"):
+                st.text(st.session_state.daily_log)
+
+        if st.session_state.daily_fname and os.path.exists(st.session_state.daily_fname):
+            with open(st.session_state.daily_fname, "rb") as f:
+                st.download_button("📥 통합 엑셀 다운로드", f,
+                                   file_name=os.path.basename(st.session_state.daily_fname),
+                                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                   key="dl_daily")
+
+    with tab_kw:
+        kw_platform = st.radio("플랫폼", ["Google", "Naver", "Google+Naver"],
+                               index=2, horizontal=True, key="kw_platform")
+
+        kw_preset = st.selectbox("기간", ["주간(월~일)", "어제", "지난 7일", "지난 30일", "이번 달", "직접선택"],
+                                 index=0, key="kw_preset")
+
+        if kw_preset != st.session_state.kw_preset_prev and kw_preset != "직접선택":
+            kr = preset_range(kw_preset)
+            st.session_state.kw_d1 = datetime.strptime(kr[0][:10], "%Y-%m-%d").date()
+            st.session_state.kw_d2 = datetime.strptime(kr[1][:10], "%Y-%m-%d").date()
+            st.session_state.kw_preset_prev = kw_preset
+            st.rerun()
+
+        col_k1, col_k2 = st.columns(2)
+        with col_k1:
+            kw_d1 = st.date_input("시작일", key="kw_d1")
+        with col_k2:
+            kw_d2 = st.date_input("종료일", key="kw_d2")
+
+        if st.button("키워드 성과 엑셀 생성", type="primary", key="btn_kw"):
+            with st.spinner("키워드 데이터 수집 중..."):
+                kw_summary, kw_detail, kw_fname = run_keyword_report(kw_platform, str(kw_d1), str(kw_d2))
+            st.session_state.kw_log = kw_summary
+            st.session_state.kw_detail_log = kw_detail
+            if kw_fname and os.path.exists(kw_fname):
+                st.session_state.kw_fname = kw_fname
+                try:
+                    st.session_state.kw_df = pd.read_excel(kw_fname)
                 except Exception:
-                    st.session_state.comment_out = f"❌ 코멘트 생성 오류:\n{traceback.format_exc()}"
+                    st.session_state.kw_df = None
 
-    # ✅ 항상 렌더: 탭/챗봇 입력해도 안 날아감
-    st.text_area("데일리 코멘트", value=st.session_state.get("comment_out",""), height=400, key="comment_out_display")
+        if st.session_state.kw_log:
+            with st.expander("📋 로그 보기"):
+                st.text(st.session_state.kw_log)
+                if st.session_state.kw_detail_log:
+                    st.text(st.session_state.kw_detail_log)
 
-# ── 우하: 챗봇 ────────────────────────────────────────────
-with col_chat:
-    st.markdown("## 💬 챗봇")
+        if st.session_state.kw_fname and os.path.exists(st.session_state.kw_fname):
+            with open(st.session_state.kw_fname, "rb") as f:
+                st.download_button("📥 키워드 성과 다운로드", f,
+                                   file_name=os.path.basename(st.session_state.kw_fname),
+                                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                   key="dl_kw")
 
-    # 대화 내역 표시
-    for msg in st.session_state.chat_history:
-        with st.chat_message(msg["role"]):
-            st.write(msg["content"])
+    st.divider()
 
-    chat_input = st.chat_input("예: 어제 가입전환 가장 높은 키워드가 뭐야?")
+    # ── 하단: 코멘트 + 챗봇 탭 ───────────────────────
+    tab_comment, tab_chat = st.tabs(["✅ 데일리 코멘트", "💬 챗봇"])
 
-    if chat_input:
-        st.session_state.chat_history.append({"role": "user", "content": chat_input})
-        with st.chat_message("user"):
-            st.write(chat_input)
+    with tab_comment:
+        compare_mode = st.radio("비교 기준",
+                                ["전일(D-1) 비교", "전주 동요일(D-7) 비교"],
+                                horizontal=True, key="compare_mode")
 
-        with st.chat_message("assistant"):
-            with st.spinner("생각 중..."):
-                try:
-                    data_context = ""
-                    if st.session_state.saved_path:
-                        try:
-                            df_ctx = pd.read_excel(st.session_state.saved_path)
-                            if len(df_ctx) > 500:
-                                df_ctx = df_ctx.head(500)
-                            data_context = f"\n\n[광고 데이터 (최대 500행)]\n{df_ctx.to_string(index=False)}\n"
-                        except Exception as e:
-                            data_context = f"\n\n[데이터 로드 실패: {e}]\n"
-                    else:
-                        data_context = "\n\n[데이터 없음 - 먼저 통합 엑셀을 생성해주세요]\n"
+        manual_actions = st.text_area("액션/메모 (옵션)",
+                                      placeholder="예: 예산 상향 조정 후 모니터링 예정",
+                                      height=60, key="manual_actions")
 
-                    system_prompt = (
-                        "너는 사방넷 광고 데이터 분석 도우미야. "
-                        "아래 광고 raw 데이터를 기반으로 질문에 정확하게 답변해줘. "
-                        "데이터에 없는 내용은 추측하지 말고 '데이터에 없습니다'라고 답해줘. "
-                        "숫자는 쉼표 단위로 읽기 쉽게 표현해줘."
-                        + data_context
-                    )
+        include_kw = st.checkbox("키워드 인사이트 포함", value=False, key="include_kw_for_comment")
 
-                    gemini_history = [
-                        {"role": "user",  "parts": [{"text": system_prompt}]},
-                        {"role": "model", "parts": [{"text": "네, 데이터 확인했습니다. 질문해주세요!"}]}
-                    ]
-                    for h in st.session_state.chat_history[:-1]:
-                        role = "user" if h["role"] == "user" else "model"
-                        gemini_history.append({"role": role, "parts": [{"text": h["content"]}]})
-                    gemini_history.append({"role": "user", "parts": [{"text": chat_input}]})
+        if st.button("데일리 코멘트 생성", key="btn_comment", type="primary"):
+            if not st.session_state.saved_path:
+                st.warning("먼저 통합 엑셀을 생성해주세요")
+            else:
+                with st.spinner("코멘트 생성 중..."):
+                    try:
+                        st.session_state.comment_out = generate_daily_comment_from_excel(
+                            st.session_state.saved_path,
+                            st.session_state.saved_platform,
+                            compare_mode,
+                            manual_actions or "",
+                            include_kw=include_kw
+                        )
+                    except Exception:
+                        st.session_state.comment_out = f"❌ 코멘트 생성 오류:\n{traceback.format_exc()}"
 
-                    resp = (_gemini.models.generate_content if _gemini else (_raise_no_key()))(model=GEMINI_MODEL, contents=gemini_history)
-                    answer = (resp.text or "").strip() or "응답 없음"
-                except Exception as e:
-                    answer = f"❌ 오류: {e}"
+        st.text_area("코멘트", value=st.session_state.get("comment_out",""), height=300, key="comment_out_display")
 
-            st.write(answer)
-            st.session_state.chat_history.append({"role": "assistant", "content": answer})
+    with tab_chat:
+        for msg in st.session_state.chat_history:
+            with st.chat_message(msg["role"]):
+                st.write(msg["content"])
 
-    if st.button("대화 초기화", key="chat_reset"):
-        st.session_state.chat_history = []
-        st.rerun()
+        chat_input = st.chat_input("예: 어제 가입전환 가장 높은 캠페인이 뭐야?")
+
+        if chat_input:
+            st.session_state.chat_history.append({"role": "user", "content": chat_input})
+            with st.chat_message("user"):
+                st.write(chat_input)
+
+            with st.chat_message("assistant"):
+                with st.spinner("생각 중..."):
+                    try:
+                        data_context = ""
+                        if st.session_state.saved_path:
+                            try:
+                                df_ctx = pd.read_excel(st.session_state.saved_path)
+                                if len(df_ctx) > 500:
+                                    df_ctx = df_ctx.head(500)
+                                data_context = f"\n\n[광고 데이터 (최대 500행)]\n{df_ctx.to_string(index=False)}\n"
+                            except Exception as e:
+                                data_context = f"\n\n[데이터 로드 실패: {e}]\n"
+                        else:
+                            data_context = "\n\n[데이터 없음 - 먼저 통합 엑셀을 생성해주세요]\n"
+
+                        system_prompt = (
+                            "너는 사방넷 광고 데이터 분석 도우미야. "
+                            "아래 광고 raw 데이터를 기반으로 질문에 정확하게 답변해줘. "
+                            "데이터에 없는 내용은 추측하지 말고 '데이터에 없습니다'라고 답해줘. "
+                            "숫자는 쉼표 단위로 읽기 쉽게 표현해줘."
+                            + data_context
+                        )
+
+                        gemini_history = [
+                            {"role": "user",  "parts": [{"text": system_prompt}]},
+                            {"role": "model", "parts": [{"text": "네, 데이터 확인했습니다. 질문해주세요!"}]}
+                        ]
+                        for h in st.session_state.chat_history[:-1]:
+                            role = "user" if h["role"] == "user" else "model"
+                            gemini_history.append({"role": role, "parts": [{"text": h["content"]}]})
+                        gemini_history.append({"role": "user", "parts": [{"text": chat_input}]})
+
+                        resp = (_gemini.models.generate_content if _gemini else (_raise_no_key()))(model=GEMINI_MODEL, contents=gemini_history)
+                        answer = (resp.text or "").strip() or "응답 없음"
+                    except Exception as e:
+                        answer = f"❌ 오류: {e}"
+
+                st.write(answer)
+                st.session_state.chat_history.append({"role": "assistant", "content": answer})
+
+        if st.button("대화 초기화", key="chat_reset"):
+            st.session_state.chat_history = []
+            st.rerun()
