@@ -5,3 +5,4 @@ requests
 google-ads
 google-genai
 numpy
+plotly
