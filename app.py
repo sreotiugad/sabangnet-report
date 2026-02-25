@@ -2257,57 +2257,262 @@ with col_right:
         st.text_area("코멘트", value=st.session_state.comment_out, height=300)
 
     with tab_chat:
-        for msg in st.session_state.chat_history:
-            with st.chat_message(msg["role"]):
-                st.write(msg["content"])
+        # ── 챗봇 CSS ─────────────────────────────────────────
+        st.markdown("""
+        <style>
+        .chat-wrap {
+            display: flex; flex-direction: column; gap: 14px;
+            padding: 16px 4px; max-height: 460px;
+            overflow-y: auto;
+        }
+        .chat-row-user  { display:flex; justify-content:flex-end; align-items:flex-end; gap:8px; }
+        .chat-row-ai    { display:flex; justify-content:flex-start; align-items:flex-end; gap:8px; }
 
-        chat_input = st.chat_input("예: 어제 가입전환 가장 높은 캠페인이 뭐야?")
+        .chat-avatar-ai {
+            width:34px; height:34px; border-radius:50%; flex-shrink:0;
+            background: linear-gradient(135deg,#ff9ecb,#ffb6dd);
+            display:flex; align-items:center; justify-content:center;
+            font-size:16px; box-shadow:0 4px 10px rgba(255,158,203,0.4);
+        }
+        .chat-avatar-user {
+            width:34px; height:34px; border-radius:50%; flex-shrink:0;
+            background: linear-gradient(135deg,#a78bfa,#818cf8);
+            display:flex; align-items:center; justify-content:center;
+            font-size:15px; box-shadow:0 4px 10px rgba(167,139,250,0.35);
+        }
+        .bubble-ai {
+            max-width:88%; padding:13px 16px; font-size:13px; line-height:1.65;
+            background:#ffffff; color:#1f2937;
+            border-radius:18px 18px 18px 4px;
+            border:1px solid #fce7f3;
+            box-shadow:0 4px 16px rgba(219,39,119,0.08);
+            white-space: pre-wrap;
+        }
+        .bubble-user {
+            max-width:82%; padding:11px 15px; font-size:13px; line-height:1.55;
+            background: linear-gradient(135deg,#ec4899,#f472b6);
+            color:white; font-weight:500;
+            border-radius:18px 18px 4px 18px;
+            box-shadow:0 4px 14px rgba(236,72,153,0.35);
+        }
+        .chat-empty {
+            text-align:center; padding:40px 20px;
+            color:#d1a0c0; font-size:13px;
+        }
+        .chat-empty-icon { font-size:36px; margin-bottom:8px; }
+        .chat-empty-title { font-size:15px; font-weight:700; color:#f472b6; margin-bottom:4px; }
 
-        if chat_input:
-            st.session_state.chat_history.append({"role": "user", "content": chat_input})
-            with st.chat_message("user"):
-                st.write(chat_input)
+        .quick-chips { display:flex; flex-wrap:wrap; gap:7px; margin-bottom:12px; }
+        .chip-label {
+            display:inline-block; padding:5px 13px; font-size:11px; font-weight:600;
+            border-radius:20px; cursor:pointer; border:1.5px solid #fbcfe8;
+            color:#be185d; background:#fff0f7;
+            transition:all 0.15s;
+        }
+        .chip-label:hover { background:#fbcfe8; }
 
-            with st.chat_message("assistant"):
-                with st.spinner("생각 중..."):
-                    try:
-                        data_context = ""
-                        if st.session_state.saved_path:
-                            try:
-                                df_ctx = pd.read_excel(st.session_state.saved_path)
-                                if len(df_ctx) > 500:
-                                    df_ctx = df_ctx.head(500)
-                                data_context = f"\n\n[광고 데이터 (최대 500행)]\n{df_ctx.to_string(index=False)}\n"
-                            except Exception as e:
-                                data_context = f"\n\n[데이터 로드 실패: {e}]\n"
-                        else:
-                            data_context = "\n\n[데이터 없음 - 먼저 통합 엑셀을 생성해주세요]\n"
+        .chat-toolbar {
+            display:flex; justify-content:space-between; align-items:center;
+            margin-bottom:8px;
+        }
+        .chat-title-bar {
+            font-size:13px; font-weight:800; color:#be185d;
+            display:flex; align-items:center; gap:6px;
+        }
+        .online-dot {
+            width:7px; height:7px; border-radius:50%;
+            background:#22c55e; animation: blink 1.4s infinite;
+        }
+        @keyframes blink {
+            0%,100%{ opacity:1; } 50%{ opacity:0.3; }
+        }
+        </style>
+        """, unsafe_allow_html=True)
 
-                        system_prompt = (
-                            "너는 사방넷 광고 데이터 분석 도우미야. "
-                            "아래 광고 raw 데이터를 기반으로 질문에 정확하게 답변해줘. "
-                            "데이터에 없는 내용은 추측하지 말고 '데이터에 없습니다'라고 답해줘. "
-                            "숫자는 쉼표 단위로 읽기 쉽게 표현해줘."
-                            + data_context
+        # ── 툴바 ─────────────────────────────────────────────
+        col_title, col_reset = st.columns([5, 1])
+        with col_title:
+            st.markdown("""
+            <div class="chat-title-bar">
+                <span class="online-dot"></span>
+                💖 AI 광고 컨설턴트
+                <span style="font-size:10px;color:#f9a8d4;font-weight:500;margin-left:4px">Powered by Gemini</span>
+            </div>
+            """, unsafe_allow_html=True)
+        with col_reset:
+            if st.button("🗑️", key="chat_reset", help="대화 초기화"):
+                st.session_state.chat_history = []
+                st.rerun()
+
+        # ── 빠른 질문 칩 ─────────────────────────────────────
+        QUICK_QUESTIONS = [
+            "💰 CPA 개선 방법은?",
+            "📈 가입전환 높은 캠페인 TOP3",
+            "🔻 예산 낭비 캠페인 찾아줘",
+            "🎯 지금 예산 배분 괜찮아?",
+            "⚡ 지금 당장 할 수 있는 액션은?",
+        ]
+
+        cols = st.columns(len(QUICK_QUESTIONS))
+        quick_clicked = None
+        for i, (col, q) in enumerate(zip(cols, QUICK_QUESTIONS)):
+            with col:
+                if st.button(q, key=f"quick_{i}", use_container_width=True):
+                    quick_clicked = q
+
+        st.divider()
+
+        # ── 채팅 히스토리 렌더링 ─────────────────────────────
+        if not st.session_state.chat_history:
+            st.markdown("""
+            <div class="chat-empty">
+                <div class="chat-empty-icon">💬</div>
+                <div class="chat-empty-title">AI 광고 컨설턴트</div>
+                데이터를 분석하고 솔루션을 드릴게요!<br>
+                위 버튼을 눌러보거나 자유롭게 질문해주세요 ✨
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            chat_html = '<div class="chat-wrap">'
+            for msg in st.session_state.chat_history:
+                content = str(msg["content"]).replace("<", "&lt;").replace(">", "&gt;")
+                if msg["role"] == "user":
+                    chat_html += f"""
+                    <div class="chat-row-user">
+                        <div class="bubble-user">{content}</div>
+                        <div class="chat-avatar-user">👤</div>
+                    </div>"""
+                else:
+                    chat_html += f"""
+                    <div class="chat-row-ai">
+                        <div class="chat-avatar-ai">💖</div>
+                        <div class="bubble-ai">{content}</div>
+                    </div>"""
+            chat_html += '</div>'
+            st.markdown(chat_html, unsafe_allow_html=True)
+
+        # ── 입력창 ────────────────────────────────────────────
+        chat_input = st.chat_input("데이터 분석, 솔루션, 전략 뭐든 물어보세요!")
+        final_input = quick_clicked or chat_input
+
+        # ── 공통 Gemini 호출 로직 ─────────────────────────────
+        def _build_data_context():
+            """데이터 요약 + 원본 일부를 Gemini에게 전달"""
+            if not st.session_state.saved_path:
+                return "[데이터 없음 - 통합 엑셀을 먼저 생성해주세요]"
+            try:
+                df_ctx = pd.read_excel(st.session_state.saved_path)
+
+                # 핵심 지표 요약
+                summary_lines = ["=== 광고 성과 데이터 요약 ==="]
+
+                # 전체 합산
+                for col in ["노출수","클릭수","가입","광고비(마크업포함,VAT포함)","총비용"]:
+                    if col in df_ctx.columns:
+                        total = pd.to_numeric(df_ctx[col], errors="coerce").sum()
+                        summary_lines.append(f"총 {col}: {total:,.0f}")
+
+                # 날짜 범위
+                if "기간" in df_ctx.columns:
+                    dates = pd.to_datetime(df_ctx["기간"], errors="coerce").dropna()
+                    if not dates.empty:
+                        summary_lines.append(f"기간: {dates.min().date()} ~ {dates.max().date()}")
+
+                # 서비스별 광고비 + 가입
+                if "서비스" in df_ctx.columns and "광고비(마크업포함,VAT포함)" in df_ctx.columns:
+                    svc_grp = df_ctx.groupby("서비스")[["광고비(마크업포함,VAT포함)","가입"]].sum()
+                    summary_lines.append("\n=== 서비스별 성과 ===")
+                    for svc, row in svc_grp.iterrows():
+                        cost = row.get("광고비(마크업포함,VAT포함)", 0)
+                        conv = row.get("가입", 0)
+                        cpa = int(cost / conv) if conv > 0 else 0
+                        summary_lines.append(f"{svc}: 광고비 {cost:,.0f}원 / 가입 {conv:.0f}건 / CPA {cpa:,}원")
+
+                # 매체별 성과
+                if "매체" in df_ctx.columns:
+                    med_grp = df_ctx.groupby("매체")[["광고비(마크업포함,VAT포함)","가입","클릭수"]].sum()
+                    summary_lines.append("\n=== 매체별 성과 ===")
+                    for med, row in med_grp.iterrows():
+                        cost = row.get("광고비(마크업포함,VAT포함)", 0)
+                        conv = row.get("가입", 0)
+                        clk  = row.get("클릭수", 0)
+                        cpc  = int(cost / clk) if clk > 0 else 0
+                        cpa  = int(cost / conv) if conv > 0 else 0
+                        summary_lines.append(f"{med}: 광고비 {cost:,.0f}원 / 가입 {conv:.0f}건 / CPC {cpc:,}원 / CPA {cpa:,}원")
+
+                # 캠페인별 성과 TOP 10 (광고비 기준)
+                if "캠페인" in df_ctx.columns:
+                    camp_grp = df_ctx.groupby("캠페인")[["광고비(마크업포함,VAT포함)","가입","클릭수","노출수"]].sum()
+                    camp_grp = camp_grp.sort_values("광고비(마크업포함,VAT포함)", ascending=False).head(15)
+                    summary_lines.append("\n=== 캠페인별 성과 TOP15 (광고비순) ===")
+                    for camp, row in camp_grp.iterrows():
+                        cost = row.get("광고비(마크업포함,VAT포함)", 0)
+                        conv = row.get("가입", 0)
+                        clk  = row.get("클릭수", 0)
+                        imp  = row.get("노출수", 0)
+                        ctr  = f"{clk/imp*100:.1f}%" if imp > 0 else "-"
+                        cpa  = int(cost / conv) if conv > 0 else 0
+                        summary_lines.append(
+                            f"{camp}: 광고비 {cost:,.0f}원 / 가입 {conv:.0f}건 / CTR {ctr} / CPA {cpa:,}원"
                         )
 
-                        gemini_history = [
-                            {"role": "user",  "parts": [{"text": system_prompt}]},
-                            {"role": "model", "parts": [{"text": "네, 데이터 확인했습니다. 질문해주세요!"}]}
-                        ]
-                        for h in st.session_state.chat_history[:-1]:
-                            role = "user" if h["role"] == "user" else "model"
-                            gemini_history.append({"role": role, "parts": [{"text": h["content"]}]})
-                        gemini_history.append({"role": "user", "parts": [{"text": chat_input}]})
+                # raw 데이터 일부 (최근 100행)
+                raw_sample = df_ctx.tail(100).to_string(index=False)
+                return "\n".join(summary_lines) + "\n\n=== RAW 샘플 (최근 100행) ===\n" + raw_sample
 
-                        resp = (_gemini.models.generate_content if _gemini else (_raise_no_key()))(model=GEMINI_MODEL, contents=gemini_history)
-                        answer = (resp.text or "").strip() or "응답 없음"
-                    except Exception as e:
-                        answer = f"❌ 오류: {e}"
+            except Exception as e:
+                return f"[데이터 로드 실패: {e}]"
 
-                st.write(answer)
-                st.session_state.chat_history.append({"role": "assistant", "content": answer})
+        SYSTEM_PROMPT = """
+너는 퍼포먼스 마케팅 전문가이자 데이터 기반 광고 컨설턴트야.
+사방넷(셀링툴/풀필먼트/미니) 서비스의 광고 성과 데이터를 분석하고,
+실질적인 솔루션과 액션 아이템을 제안하는 것이 주 임무야.
 
-        if st.button("대화 초기화", key="chat_reset"):
-            st.session_state.chat_history = []
+[역할 및 능력]
+- 데이터에서 인사이트를 도출하고, 왜 그런 성과가 나왔는지 가설을 제시할 수 있어
+- CPA, CTR, CPC, ROAS 등 광고 지표를 깊이 이해하고 벤치마크 대비 평가 가능
+- 예산 재배분, 입찰 전략, 캠페인 구조 개선 등 구체적인 솔루션 제안 가능
+- 네이버 파워링크, 구글 검색/디스플레이/PMax 각 플랫폼 특성을 알고 있어
+- 브랜드검색(BS), 파워링크, 실적최대화 등 캠페인 유형별 전략 조언 가능
+
+[답변 스타일]
+- 친근하면서도 전문적으로, 마치 옆에 앉은 시니어 마케터처럼 대화해
+- 데이터가 있으면 수치를 인용하면서 분석하고, 없으면 일반 마케팅 지식으로 답해
+- 단순 데이터 조회 질문엔 수치를 깔끔하게 정리해서 보여줘
+- 솔루션/전략 질문엔 우선순위 있는 액션 플랜으로 답해줘 (예: 📌 즉시 / 🔄 단기 / 📈 중장기)
+- 숫자는 항상 쉼표(,) 단위로, 원화는 '원', 퍼센트는 '%' 명시
+- 부정적인 성과도 솔직하게 말하고 개선 방향을 제시해줘
+- 마크다운 형식(**, ##, - 등) 자유롭게 사용해서 가독성 높여줘
+
+[주의사항]
+- 데이터에 없는 구체적 수치는 지어내지 말고, "데이터에 없어서 정확한 수치는 모르지만~" 식으로 말해
+- 하지만 마케팅 전문 지식을 기반으로 한 추론과 제안은 적극적으로 해도 돼
+- 사방넷 서비스 특성(e-commerce 셀링툴, 풀필먼트, 미니샵)을 고려한 맞춤 조언을 해줘
+""".strip()
+
+        if final_input:
+            st.session_state.chat_history.append({"role": "user", "content": final_input})
+
+            with st.spinner("💭 분석 중..."):
+                try:
+                    data_ctx = _build_data_context()
+                    full_system = SYSTEM_PROMPT + f"\n\n{data_ctx}"
+
+                    gemini_history = [
+                        {"role": "user",  "parts": [{"text": full_system}]},
+                        {"role": "model", "parts": [{"text": "안녕하세요! 광고 데이터 확인했어요. 분석이나 솔루션이 필요한 게 있으면 편하게 물어보세요 💖"}]}
+                    ]
+                    for h in st.session_state.chat_history[:-1]:
+                        role = "user" if h["role"] == "user" else "model"
+                        gemini_history.append({"role": role, "parts": [{"text": h["content"]}]})
+                    gemini_history.append({"role": "user", "parts": [{"text": final_input}]})
+
+                    resp = (_gemini.models.generate_content if _gemini else (_raise_no_key()))(
+                        model=GEMINI_MODEL, contents=gemini_history
+                    )
+                    answer = (resp.text or "").strip() or "응답 없음"
+                except Exception as e:
+                    answer = f"❌ 오류: {e}"
+
+            st.session_state.chat_history.append({"role": "assistant", "content": answer})
             st.rerun()
