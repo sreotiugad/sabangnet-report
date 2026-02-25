@@ -2057,36 +2057,45 @@ def render_daily_dashboard(df: pd.DataFrame, df_prev=None, d1=None, d2=None):
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # ── 서비스별 ─────────────────────────────────────
-    if "서비스" in df.columns:
+    # ── 서비스별 x 매체별 ────────────────────────────────
+    if "서비스" in df.columns and "매체" in df.columns:
         st.markdown("<div class='section-title'>서비스별</div>", unsafe_allow_html=True)
-        services = [s for s in df["서비스"].unique() if str(s).strip() not in ("","nan","None")]
-        svc_cols = st.columns(max(len(services), 1))
+        services = sorted([s for s in df["서비스"].unique() if str(s).strip() not in ("","nan","None")])
+        media_order = ["구글","네이버"]
 
-        for i, svc in enumerate(sorted(services)):
-            cur_s  = df[df["서비스"]==svc]
-            prev_s = df_prev[df_prev["서비스"]==svc] if df_prev is not None and "서비스" in df_prev.columns else None
+        for svc in services:
+            st.markdown(f"<div style='font-size:14px;font-weight:700;color:#7C6DEB;margin:10px 0 6px'>{svc}</div>", unsafe_allow_html=True)
+            svc_med_cols = st.columns(len(media_order))
 
-            sc = _sum(cur_s,  "광고비(마크업포함,VAT포함)")
-            si = _sum(cur_s,  "노출수")
-            sk = _sum(cur_s,  "클릭수")
-            sv = _sum(cur_s,  "가입")
-            pc = _sum(prev_s, "광고비(마크업포함,VAT포함)")
-            pv = _sum(prev_s, "가입")
+            for j, media in enumerate(media_order):
+                cur_sm  = df[(df["서비스"]==svc) & (df["매체"]==media)]
+                prev_sm = df_prev[(df_prev["서비스"]==svc) & (df_prev["매체"]==media)] if df_prev is not None and "서비스" in df_prev.columns else None
 
-            with svc_cols[i % len(svc_cols)]:
-                st.markdown(f"""
-                <div class="db-card">
-                  <div style="font-size:14px;font-weight:700;color:#7C6DEB;margin-bottom:10px">{svc}</div>
-                  <div style="display:flex;gap:14px;flex-wrap:wrap">
-                    <div><div class="db-label">광고비</div><div style="font-size:16px;font-weight:800;color:#1a1a2e">{sc:,}원</div>
-                      <div class="db-sub">{_badge(_delta(sc,pc))} 전일 {pc:,}원</div></div>
-                    <div><div class="db-label">노출수</div><div style="font-size:16px;font-weight:800;color:#1a1a2e">{si:,}</div></div>
-                    <div><div class="db-label">클릭수</div><div style="font-size:16px;font-weight:800;color:#1a1a2e">{sk:,}</div></div>
-                    <div><div class="db-label">가입</div><div style="font-size:16px;font-weight:800;color:#7C6DEB">{sv:,}건</div>
-                      <div class="db-sub">{_badge(_delta(sv,pv))} 전일 {pv:,}건</div></div>
-                  </div>
-                </div>""", unsafe_allow_html=True)
+                sc = _sum(cur_sm,  "광고비(마크업포함,VAT포함)")
+                si = _sum(cur_sm,  "노출수")
+                sk = _sum(cur_sm,  "클릭수")
+                sv = _sum(cur_sm,  "가입")
+                pc = _sum(prev_sm, "광고비(마크업포함,VAT포함)")
+                pv = _sum(prev_sm, "가입")
+
+                badge_bg    = "#fff0f0" if media == "구글" else "#f0fdf4"
+                badge_color = "#dc2626" if media == "구글" else "#16a34a"
+
+                with svc_med_cols[j]:
+                    st.markdown(f"""
+                    <div class="db-card">
+                      <div style="margin-bottom:8px">
+                        <span style="background:{badge_bg};color:{badge_color};padding:3px 10px;border-radius:8px;font-size:12px;font-weight:700">{media}</span>
+                      </div>
+                      <div style="display:flex;gap:12px;flex-wrap:wrap">
+                        <div><div class="db-label">광고비</div><div style="font-size:15px;font-weight:800;color:#1a1a2e">{sc:,}원</div>
+                          <div class="db-sub">{_badge(_delta(sc,pc))} 전일 {pc:,}원</div></div>
+                        <div><div class="db-label">노출수</div><div style="font-size:15px;font-weight:800;color:#1a1a2e">{si:,}</div></div>
+                        <div><div class="db-label">클릭수</div><div style="font-size:15px;font-weight:800;color:#1a1a2e">{sk:,}</div></div>
+                        <div><div class="db-label">가입</div><div style="font-size:15px;font-weight:800;color:#7C6DEB">{sv:,}건</div>
+                          <div class="db-sub">{_badge(_delta(sv,pv))} 전일 {pv:,}건</div></div>
+                      </div>
+                    </div>""", unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
 
@@ -2145,7 +2154,7 @@ if "kw_df"    not in st.session_state: st.session_state.kw_df    = None
 # =====================================================
 # 탭: 리포트 생성 / 대시보드
 # =====================================================
-tab_report, tab_dashboard = st.tabs(["📋 리포트 생성", "📊 대시보드"])
+tab_dashboard, tab_report = st.tabs(["📊 대시보드", "📋 리포트 생성"])
 
 with tab_report:
  col_daily, col_kw = st.columns([6, 5])
