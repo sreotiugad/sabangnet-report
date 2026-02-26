@@ -512,7 +512,7 @@ def get_n_keyword_data_report(d_from, d_to, report_tp="AD", logs=None) -> pd.Dat
             # ✅ adId 집계를 먼저! (ccnt 머지 전에 해야 중복 방지)
             if "keywordId" in df_ad.columns:
                 grp_cols = [c for c in ["statDt","customerId","campaignId","adgroupId","keywordId","pcMblTp","campaignName","adgroupName","keywordName"] if c in df_ad.columns]
-                sum_cols = [c for c in ["impCnt","clkCnt","salesAmt"] if c in df_ad.columns]
+                sum_cols = [c for c in ["impCnt","clkCnt","clkAmt"] if c in df_ad.columns]
                 agg_dict = {c: "sum" for c in sum_cols}
                 if "avgRnk" in df_ad.columns:
                     agg_dict["avgRnk"] = "mean"
@@ -641,7 +641,7 @@ def _fetch_naver_report_day(acc, day, report_tp, camp_map, grp_map, kw_map, logs
             base_cols = [
                 "statDt","customerId","campaignId","adgroupId",
                 "keywordId","adId","bsnId","bidAmt","pcMblTp",
-                "impCnt","clkCnt","convAmt","salesAmt","avgRnk"
+                "impCnt","clkCnt","clkAmt","convAmt","avgRnk"  # clkAmt=광고비, convAmt=전환매출
             ]
             if col_count >= 15:
                 base_cols.append("cpConv")
@@ -1190,7 +1190,7 @@ def _naver_pc_mo_from_raw(pcMblTp: str) -> str:
 def format_naver_keyword_report(nk_raw: pd.DataFrame) -> pd.DataFrame:
     nk = nk_raw.copy()
 
-    for c in ["impCnt","clkCnt","ccnt","salesAmt","convAmt","avgRnk"]:
+    for c in ["impCnt","clkCnt","ccnt","clkAmt","convAmt","avgRnk"]:
         if c in nk.columns:
             nk[c] = pd.to_numeric(nk[c], errors="coerce").fillna(0)
 
@@ -1215,14 +1215,16 @@ def format_naver_keyword_report(nk_raw: pd.DataFrame) -> pd.DataFrame:
     out["노출 수"] = nk.get("impCnt", 0).astype(int)
     out["클릭 수"] = nk.get("clkCnt", 0).astype(int)
 
-    cost_col = "convAmt" if "convAmt" in nk.columns and nk["convAmt"].sum() > nk.get("salesAmt", pd.Series([0])).sum() else "salesAmt"
-    out["총 비용"] = pd.to_numeric(nk.get(cost_col, 0), errors="coerce").fillna(0).apply(round_half_up_int)
+    # ✅ 광고비 컬럼 = clkAmt (클릭비용, 12번째 컬럼 = 실제 광고비)
+    # convAmt(13번)는 전환매출액이라 광고비 아님! salesAmt 이름으로 잘못 매핑되어 있었음
+    out["총 비용"] = pd.to_numeric(nk.get("clkAmt", 0), errors="coerce").fillna(0).apply(round_half_up_int)
 
     out["가입"] = pd.to_numeric(nk.get("ccnt", 0), errors="coerce").fillna(0).astype(int)
     out["평균노출순위"] = nk.get("avgRnk", 0).astype(float)
 
     out["가산"] = (out["노출 수"].astype(float) * out["평균노출순위"].astype(float)).fillna(0).round(1)
-    out["광고비(마크업포함,VAT포함)"] = (out["총 비용"].astype(float) / 1.1).round(1)
+    # 통합리포트와 동일: clkAmt(VAT포함) / 1.1
+    out["광고비(마크업포함,VAT포함)"] = out["총 비용"].apply(lambda x: round_half_up_int(float(x) / 1.1))
     out["서비스"] = assign_service_from_campaign(out["캠페인"].astype(str))
 
     for c in KW_FINAL_COLS:
