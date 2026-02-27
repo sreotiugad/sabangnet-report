@@ -123,10 +123,11 @@ def assign_service_from_campaign(campaign_series: pd.Series) -> pd.Series:
     )
 
 def calc_display_cost(row) -> int:
+def calc_display_cost(row) -> int:
     """
     광고비(마크업포함,VAT포함)
-    - 구글: 총비용 * 1.1 -> 반올림
-    - 네이버: 총비용 / 1.1 -> 반올림
+    - 구글: 총비용(VAT제외) * 1.1 -> VAT포함
+    - 네이버: 총비용(VAT제외) * 1.1 -> VAT포함 (salesAmt/clkAmt 모두 VAT제외)
     """
     cost = Decimal(str(row.get("총비용", 0) or 0))
     media = str(row.get("매체", ""))
@@ -134,7 +135,7 @@ def calc_display_cost(row) -> int:
     if media == "구글":
         val = cost * Decimal("1.1")
     elif media == "네이버":
-        val = cost / Decimal("1.1")
+        val = cost * Decimal("1.1")
     else:
         val = cost
 
@@ -362,59 +363,136 @@ def naver_list_adgroups(acc, campaign_id: str = None):
     j = safe_json(r)
     return j if isinstance(j, list) else []
 
-def naver_build_name_maps(acc, exclude_bs=False):
-    # 캠페인 id->name
-    camps = naver_list_campaigns(acc)
+def _naver_master_report(acc, item: str, logs=None) -> list:
+    """
+    Master Report API로 특정 item 전체 목록을 한 번에 가져온다.
+    POST /master-reports → 폴링 → 다운로드 → JSON 파싱
+    """
+    if logs is None:
+        logs = []
 
-    # ✅ 키워드 리포트 시 브검 캠페인 제외 (이름 또는 ID 패턴으로 필터)
-    if exclude_bs:
-        camps = [c for c in camps
-                 if "_BS_" not in str(c.get("name", ""))
-                 and "-a001-04-" not in str(c.get("nccCampaignId", ""))]
-
-    camp_map = {c.get("nccCampaignId"): c.get("name") for c in camps if c.get("nccCampaignId")}
-
-    # 그룹 id->name + 키워드 id 수집
-    grp_map = {}
-    all_gids = []  # 전체 그룹 ID 모아두기
-
-    for cid in list(camp_map.keys()):
-        try:
-            grps = naver_list_adgroups(acc, cid)
-            for g in grps:
-                gid = g.get("nccAdgroupId")
-                if gid:
-                    grp_map[gid] = g.get("name")
-                    all_gids.append(gid)
-        except Exception:
-            pass
-
-    # ✅ 그룹별 키워드 병렬 호출
-    def _fetch_kws(gid):
-        try:
-            uri = "/ncc/keywords"
-            r = requests.get(
-                NAVER_BASE_URL + uri,
-                headers=naver_headers(acc, uri, "GET"),
-                params={"nccAdgroupId": gid},
-                timeout=30
-            )
-            if r.status_code == 200:
-                kws = safe_json(r) or []
-                return [(kw.get("nccKeywordId"), kw.get("keyword", ""))
-                        for kw in (kws if isinstance(kws, list) else [])
-                        if kw.get("nccKeywordId") and kw.get("keyword")]
-        except Exception:
-            pass
+    uri = "/master-reports"
+    r = requests.post(
+        NAVER_BASE_URL + uri,
+        headers=naver_headers(acc, uri, "POST"),
+        json={"item": item},
+        timeout=30,
+    )
+    if r.status_code not in (200, 201):
+        logs.append(f"❌ [MasterReport] {item} 생성 실패 status={r.status_code} body={r.text[:200]}")
         return []
 
-    all_kw_ids = []
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        futures = {executor.submit(_fetch_kws, gid): gid for gid in all_gids}
-        for future in as_completed(futures):
-            all_kw_ids.extend(future.result())
+    job = r.json()
+    job_id = job.get("id")
+    if not job_id:
+        logs.append(f"❌ [MasterReport] {item} job_id 없음 resp={str(job)[:200]}")
+        return []
 
-    kw_map = {kid: kname for kid, kname in all_kw_ids}
+    # 폴링
+    download_url = None
+    for i in range(30):
+        uri_status = f"/master-reports/{job_id}"
+        rs = requests.get(
+            NAVER_BASE_URL + uri_status,
+            headers=naver_headers(acc, uri_status, "GET"),
+            timeout=30,
+        )
+        if rs.status_code != 200:
+            time.sleep(2)
+            continue
+        st = rs.json()
+        status = str(st.get("status", "")).upper()
+        du = st.get("downloadUrl") or st.get("downloadURL")
+        logs.append(f"[MasterReport] {item} poll={i+1} status={status}")
+        if status == "BUILT" and du:
+            download_url = du
+            break
+        if status in ("ERROR", "NONE"):
+            logs.append(f"❌ [MasterReport] {item} 빌드 실패 status={status}")
+            return []
+        time.sleep(2)
+
+    if not download_url:
+        logs.append(f"⚠️ [MasterReport] {item} downloadUrl 없음 (timeout)")
+        return []
+
+    # 다운로드
+    try:
+        content = naver_download_report(acc, download_url)
+    except Exception as e:
+        logs.append(f"❌ [MasterReport] {item} 다운로드 실패: {e}")
+        return []
+
+    # ZIP 해제
+    if content[:2] == b"PK":
+        z = zipfile.ZipFile(io.BytesIO(content))
+        content = z.read(z.namelist()[0])
+
+    # JSON 파싱
+    try:
+        data = json.loads(content.decode("utf-8"))
+        if isinstance(data, list):
+            return data
+        return data.get("items", data.get("data", []))
+    except Exception as e:
+        logs.append(f"❌ [MasterReport] {item} JSON 파싱 실패: {e} / 원본앞: {content[:200]}")
+        return []
+
+
+def naver_build_name_maps(acc, exclude_bs=False, logs=None):
+    """
+    Master Report API로 캠페인/그룹/키워드 id→name 맵을 한 번에 구성.
+    기존: 캠페인 N번 + 그룹 N번 + 키워드 N번 API 호출 (수백 번)
+    변경: Campaign / Adgroup / Keyword 각 1번 호출 (총 3번)
+    """
+    if logs is None:
+        logs = []
+
+    # ── 캠페인 맵 ──────────────────────────────────────────
+    camp_items = _naver_master_report(acc, "Campaign", logs)
+    camp_map = {}
+    for c in camp_items:
+        cid  = c.get("nccCampaignId") or c.get("campaignId") or c.get("id")
+        name = c.get("name") or c.get("campaignName")
+        if cid and name:
+            camp_map[cid] = name
+
+    # BS 제외 (키워드 리포트용)
+    if exclude_bs:
+        camp_map = {
+            cid: name for cid, name in camp_map.items()
+            if "_BS_" not in str(name) and "-a001-04-" not in str(cid)
+        }
+
+    logs.append(f"[MasterReport] Campaign 맵: {len(camp_map)}개")
+
+    # ── 그룹 맵 ──────────────────────────────────────────
+    grp_items = _naver_master_report(acc, "Adgroup", logs)
+    grp_map = {}
+    for g in grp_items:
+        gid  = g.get("nccAdgroupId") or g.get("adgroupId") or g.get("id")
+        name = g.get("name") or g.get("adgroupName")
+        if gid and name:
+            grp_map[gid] = name
+
+    logs.append(f"[MasterReport] Adgroup 맵: {len(grp_map)}개")
+
+    # ── 키워드 맵 ──────────────────────────────────────────
+    kw_items = _naver_master_report(acc, "Keyword", logs)
+    kw_map = {}
+    for k in kw_items:
+        kid  = k.get("nccKeywordId") or k.get("keywordId") or k.get("id")
+        name = k.get("keyword") or k.get("keywordName") or k.get("name")
+        # BS 캠페인 소속 키워드 제외
+        if exclude_bs:
+            camp_id = k.get("nccCampaignId") or k.get("campaignId") or ""
+            if "-a001-04-" in str(camp_id):
+                continue
+        if kid and name:
+            kw_map[kid] = name
+
+    logs.append(f"[MasterReport] Keyword 맵: {len(kw_map)}개")
+
     return camp_map, grp_map, kw_map
 
 def naver_fetch_stats_by_id(acc, cid, since_yyyymmdd, until_yyyymmdd, breakdown=True):
@@ -494,7 +572,7 @@ def get_n_keyword_data_report(d_from, d_to, report_tp="AD", logs=None) -> pd.Dat
 
     for acc in NAVER_ACCOUNTS:
         logs.append(f"[NAVER] account customer_id={acc.get('customer_id')} reportTp={report_tp}")
-        camp_map, grp_map, kw_map = naver_build_name_maps(acc, exclude_bs=True)
+        camp_map, grp_map, kw_map = naver_build_name_maps(acc, exclude_bs=True, logs=logs)
         logs.append(f"[NAVER] name_maps: camp={len(camp_map)}, grp={len(grp_map)}, kw={len(kw_map)}")
 
         for day in days:
@@ -1080,7 +1158,7 @@ def build_final_df(platform: str, d_from: str, d_to: str, tabula_file=None):
     is_naver = df["매체"].eq("네이버")
 
     df.loc[is_bs & is_google, "광고비(마크업포함,VAT포함)"] = df.loc[is_bs & is_google, "총비용"].astype(float) * 1.1
-    df.loc[is_bs & is_naver, "광고비(마크업포함,VAT포함)"] = df.loc[is_bs & is_naver, "총비용"].astype(float) / 1.1
+    df.loc[is_bs & is_naver, "광고비(마크업포함,VAT포함)"] = df.loc[is_bs & is_naver, "총비용"].astype(float) * 1.1
 
     for c in RAW_COLS:
         if c not in df.columns:
@@ -1223,8 +1301,8 @@ def format_naver_keyword_report(nk_raw: pd.DataFrame) -> pd.DataFrame:
     out["평균노출순위"] = nk.get("avgRnk", 0).astype(float)
 
     out["가산"] = (out["노출 수"].astype(float) * out["평균노출순위"].astype(float)).fillna(0).round(1)
-    # 통합리포트와 동일: clkAmt(VAT포함) / 1.1
-    out["광고비(마크업포함,VAT포함)"] = out["총 비용"].apply(lambda x: round_half_up_int(float(x) / 1.1))
+    # 네이버 clkAmt = VAT제외 → *1.1 해서 VAT포함 광고비 산출
+    out["광고비(마크업포함,VAT포함)"] = out["총 비용"].apply(lambda x: round_half_up_int(float(x) * 1.1))
     out["서비스"] = assign_service_from_campaign(out["캠페인"].astype(str))
 
     for c in KW_FINAL_COLS:
