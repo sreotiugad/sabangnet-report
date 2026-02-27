@@ -123,7 +123,6 @@ def assign_service_from_campaign(campaign_series: pd.Series) -> pd.Series:
     )
 
 def calc_display_cost(row) -> int:
-def calc_display_cost(row) -> int:
     """
     광고비(마크업포함,VAT포함)
     - 구글: 총비용(VAT제외) * 1.1 -> VAT포함
