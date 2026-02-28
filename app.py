@@ -126,7 +126,8 @@ def calc_display_cost(row) -> int:
     """
     광고비(마크업포함,VAT포함)
     - 구글: 총비용(VAT제외) * 1.1 -> VAT포함
-    - 네이버: 총비용(VAT제외) * 1.1 -> VAT포함 (salesAmt/clkAmt 모두 VAT제외)
+    - 네이버: 총비용(salesAmt, 이미 VAT포함) / 1.1 -> VAT제외 기준 정산액
+    ✅ 수정: 네이버 * 1.1 → / 1.1 (salesAmt는 이미 VAT포함이므로)
     """
     cost = Decimal(str(row.get("총비용", 0) or 0))
     media = str(row.get("매체", ""))
@@ -134,7 +135,7 @@ def calc_display_cost(row) -> int:
     if media == "구글":
         val = cost * Decimal("1.1")
     elif media == "네이버":
-        val = cost * Decimal("1.1")
+        val = cost / Decimal("1.1")   # ✅ FIX: * → /
     else:
         val = cost
 
@@ -1156,8 +1157,13 @@ def build_final_df(platform: str, d_from: str, d_to: str, tabula_file=None):
     is_google = df["매체"].eq("구글")
     is_naver = df["매체"].eq("네이버")
 
-    df.loc[is_bs & is_google, "광고비(마크업포함,VAT포함)"] = df.loc[is_bs & is_google, "총비용"].astype(float) * 1.1
-    df.loc[is_bs & is_naver, "광고비(마크업포함,VAT포함)"] = df.loc[is_bs & is_naver, "총비용"].astype(float) * 1.1
+    # ✅ FIX: BS 구글은 * 1.1, BS 네이버는 / 1.1 (VAT 이미 포함)
+    df.loc[is_bs & is_google, "광고비(마크업포함,VAT포함)"] = (
+        df.loc[is_bs & is_google, "총비용"].astype(float) * 1.1
+    )
+    df.loc[is_bs & is_naver, "광고비(마크업포함,VAT포함)"] = (
+        df.loc[is_bs & is_naver, "총비용"].astype(float) / 1.1   # ✅ FIX: * → /
+    )
 
     for c in RAW_COLS:
         if c not in df.columns:
@@ -1300,7 +1306,7 @@ def format_naver_keyword_report(nk_raw: pd.DataFrame) -> pd.DataFrame:
     out["평균노출순위"] = nk.get("avgRnk", 0).astype(float)
 
     out["가산"] = (out["노출 수"].astype(float) * out["평균노출순위"].astype(float)).fillna(0).round(1)
-    # 네이버 clkAmt = VAT제외 → *1.1 해서 VAT포함 광고비 산출
+    # ✅ 네이버 clkAmt = VAT제외 → *1.1 해서 VAT포함 광고비 산출 (키워드 리포트는 clkAmt 기준이라 *1.1 유지)
     out["광고비(마크업포함,VAT포함)"] = out["총 비용"].apply(lambda x: round_half_up_int(float(x) * 1.1))
     out["서비스"] = assign_service_from_campaign(out["캠페인"].astype(str))
 
@@ -2555,7 +2561,7 @@ with col_right:
 - 브랜드검색(BS), 파워링크, 실적최대화 등 캠페인 유형별 전략 조언 가능
 
 [답변 스타일]
-- 친근하면서도 전문적으로, 마치 옆에 앉은 시니어 마케터처럼 대화해
+- 친근하면서도 전문적으로, 마치 옆에 앉은 시니어 마케터처럼 대화해 다만 답변을 길게 말할 필요는 없어
 - 데이터가 있으면 수치를 인용하면서 분석하고, 없으면 일반 마케팅 지식으로 답해
 - 단순 데이터 조회 질문엔 수치를 깔끔하게 정리해서 보여줘
 - 솔루션/전략 질문엔 우선순위 있는 액션 플랜으로 답해줘 (예: 📌 즉시 / 🔄 단기 / 📈 중장기)
