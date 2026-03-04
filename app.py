@@ -1106,8 +1106,255 @@ def parse_tabula_raw(file_path, logs=None) -> pd.DataFrame:
         return pd.DataFrame()
 
 # =========================================================
-# ✅ 7) 최종 통합리포트 만들기
+# ✅ 6-3) NAS (디지털캠프 등) 리포트 파싱
 # =========================================================
+
+# 시트명 → 매체/캠페인유형 매핑
+NAS_SHEET_CONFIG = {
+    "블라인드":   {"매체": "블라인드",   "캠페인유형": "배너",      "매체구분": "DA", "캠페인": "사방넷미니_블라인드"},
+    "리멤버":    {"매체": "리멤버",    "캠페인유형": "배너",      "매체구분": "DA", "캠페인": "사방넷미니_리멤버"},
+    "디지털캠프": {"매체": "디지털캠프", "캠페인유형": "배너",      "매체구분": "DA", "캠페인": "사방넷미니_321프로모션"},
+    "네이버":    {"매체": "네이버",    "캠페인유형": "배너(DA)",   "매체구분": "DA", "캠페인": "사방넷미니_네이버DA"},
+    "네이버페이": {"매체": "네이버",    "캠페인유형": "네이버페이", "매체구분": "DA", "캠페인": "사방넷미니_네이버페이"},
+    "데이블":    {"매체": "데이블",    "캠페인유형": "배너",      "매체구분": "DA", "캠페인": "사방넷미니_데이블"},
+}
+
+def _parse_nas_sheet(df_raw: pd.DataFrame, sheet_name: str, cfg: dict, logs: list) -> list:
+    """단일 NAS 시트 → rows 리스트 반환"""
+    rows = []
+
+    # 1. DAILY REPORT 행 찾기
+    daily_start = None
+    for i in range(len(df_raw)):
+        if any("DAILY REPORT" in str(v) for v in df_raw.iloc[i].tolist()):
+            daily_start = i
+            break
+    if daily_start is None:
+        logs.append(f"[NAS] {sheet_name}: DAILY REPORT 없음, 스킵")
+        return []
+
+    # 2. 'Imps' 헤더 반복 행 찾기 → PC/Mobile 열 위치 특정
+    header_row_idx = None
+    for i in range(daily_start, min(daily_start + 8, len(df_raw))):
+        vals = [str(v).strip() for v in df_raw.iloc[i].tolist()]
+        if vals.count("Imps") >= 2:
+            header_row_idx = i
+            break
+    if header_row_idx is None:
+        logs.append(f"[NAS] {sheet_name}: 컬럼 헤더 없음, 스킵")
+        return []
+
+    # Imps 위치들 찾기
+    header_vals = [str(v).strip() for v in df_raw.iloc[header_row_idx].tolist()]
+    imps_positions = [j for j, v in enumerate(header_vals) if v == "Imps"]
+
+    # Total 섹션 포함 여부 확인 → PC/Mobile 위치 결정
+    upper_vals = [str(v).strip().upper() for v in df_raw.iloc[header_row_idx - 1].tolist()] if header_row_idx > 0 else []
+    has_total = any("TOTAL" in v for v in upper_vals)
+
+    if has_total and len(imps_positions) >= 3:
+        pc_imps_col = imps_positions[1]
+        mo_imps_col = imps_positions[2]
+    elif len(imps_positions) >= 2:
+        pc_imps_col = imps_positions[0]
+        mo_imps_col = imps_positions[1]
+    else:
+        logs.append(f"[NAS] {sheet_name}: PC/Mobile 열 특정 불가, 스킵")
+        return []
+
+    pc_clk_col  = pc_imps_col + 1
+    pc_cost_col = pc_imps_col + 3  # 소진금액 = Imps+3
+    mo_clk_col  = mo_imps_col + 1
+    mo_cost_col = mo_imps_col + 3
+
+    # 3. Daily Total 행 다음부터 데이터 시작
+    data_start = None
+    for i in range(header_row_idx, min(header_row_idx + 5, len(df_raw))):
+        if any("Daily Total" in str(v) for v in df_raw.iloc[i].tolist()):
+            data_start = i + 1
+            break
+    if data_start is None:
+        data_start = header_row_idx + 2
+
+    def _safe_int(val):
+        try: return int(float(val)) if not pd.isna(val) else 0
+        except: return 0
+
+    def _safe_float(val):
+        try: return float(val) if not pd.isna(val) else 0.0
+        except: return 0.0
+
+    # 4. 날짜 행 파싱
+    for i in range(data_start, len(df_raw)):
+        row = df_raw.iloc[i]
+        date_val = row.iloc[1]
+
+        if pd.isna(date_val) or str(date_val).strip() in ("", "nan", "NaT"):
+            continue
+
+        dt = pd.to_datetime(date_val, errors="coerce")
+        if pd.isna(dt):
+            continue
+        date_str = dt.strftime("%Y-%m-%d")
+
+        # 총 소진금액(col5) = 0이면 미집행일 → 스킵
+        total_cost = _safe_float(row.iloc[5] if len(row) > 5 else 0)
+        if total_cost == 0:
+            continue
+
+        pc_imp  = _safe_int(row.iloc[pc_imps_col]  if len(row) > pc_imps_col  else 0)
+        pc_clk  = _safe_int(row.iloc[pc_clk_col]   if len(row) > pc_clk_col   else 0)
+        pc_cost = _safe_float(row.iloc[pc_cost_col] if len(row) > pc_cost_col  else 0)
+        mo_imp  = _safe_int(row.iloc[mo_imps_col]  if len(row) > mo_imps_col  else 0)
+        mo_clk  = _safe_int(row.iloc[mo_clk_col]   if len(row) > mo_clk_col   else 0)
+        mo_cost = _safe_float(row.iloc[mo_cost_col] if len(row) > mo_cost_col  else 0)
+
+        # 캠페인명은 NAS_SHEET_CONFIG에 정의된 고정값 사용
+        base_camp = cfg["캠페인"]
+
+        if pc_imp > 0 or pc_cost > 0:
+            rows.append({
+                "매체구분": cfg["매체구분"],
+                "매체": cfg["매체"],
+                "캠페인유형": cfg["캠페인유형"],
+                "캠페인": f"{base_camp}_PC",
+                "날짜": date_str,
+                "기기": "PC",
+                "노출수": pc_imp,
+                "클릭수": pc_clk,
+                "총비용": pc_cost,
+                "가입": 0.0,
+            })
+
+        if mo_imp > 0 or mo_cost > 0:
+            rows.append({
+                "매체구분": cfg["매체구분"],
+                "매체": cfg["매체"],
+                "캠페인유형": cfg["캠페인유형"],
+                "캠페인": f"{base_camp}_MO",
+                "날짜": date_str,
+                "기기": "모바일",
+                "노출수": mo_imp,
+                "클릭수": mo_clk,
+                "총비용": mo_cost,
+                "가입": 0.0,
+            })
+
+    return rows
+
+
+def parse_nas_report(file_path, logs=None) -> pd.DataFrame:
+    """
+    NAS 리포트(디지털캠프, 블라인드, 리멤버 등) 엑셀 파싱
+    각 시트의 DAILY REPORT 섹션에서 날짜별 PC/Mobile 노출·클릭·소진금액 추출
+    """
+    if logs is None:
+        logs = []
+    if file_path is None:
+        return pd.DataFrame()
+
+    try:
+        xl = pd.ExcelFile(file_path)
+        all_rows = []
+
+        for sheet in xl.sheet_names:
+            if sheet not in NAS_SHEET_CONFIG:
+                continue
+            cfg = NAS_SHEET_CONFIG[sheet]
+            df_raw = pd.read_excel(file_path, sheet_name=sheet, header=None)
+            sheet_rows = _parse_nas_sheet(df_raw, sheet, cfg, logs)
+            logs.append(f"[NAS] {sheet}: {len(sheet_rows)}행 파싱")
+            all_rows.extend(sheet_rows)
+
+        if not all_rows:
+            logs.append("⚠️ [NAS] 유효한 데이터 없음")
+            return pd.DataFrame()
+
+        result = pd.DataFrame(all_rows)
+        logs.append(f"✅ [NAS] 전체 파싱 완료: {len(result)}행")
+        return result
+
+    except Exception as e:
+        logs.append(f"❌ [NAS] 파싱 오류: {e}\n{traceback.format_exc()}")
+        return pd.DataFrame()
+
+def parse_adn_report(file_path, logs=None) -> pd.DataFrame:
+    """
+    ADN 리포트 파싱
+    컬럼: 날짜, 송출영역, 노출, 클릭, CTR, CPC, 총비용, ...
+    날짜 형식: 2026-03-01(일) — 전체합계 행은 날짜가 NaN이므로 자동 제외
+    """
+    if logs is None:
+        logs = []
+    if file_path is None:
+        return pd.DataFrame()
+
+    try:
+        df = pd.read_excel(file_path, sheet_name=0, header=0)
+        logs.append(f"[ADN] 원본 컬럼: {list(df.columns)} rows={len(df)}")
+
+        # 날짜 컬럼 찾기
+        date_col = df.columns[0]
+        device_col = df.columns[1]
+        imp_col = df.columns[2]
+        clk_col = df.columns[3]
+        cost_col = df.columns[6]
+
+        rows = []
+        for _, row in df.iterrows():
+            date_val = str(row[date_col]).strip()
+
+            # 전체합계·NaN 행 스킵
+            if not date_val or date_val in ("nan", "NaT", "전체합계"):
+                continue
+
+            # 날짜 파싱: "2026-03-01(일)" → "2026-03-01"
+            date_clean = re.sub(r"\(.*?\)", "", date_val).strip()
+            dt = pd.to_datetime(date_clean, errors="coerce")
+            if pd.isna(dt):
+                continue
+            date_str = dt.strftime("%Y-%m-%d")
+
+            device_raw = str(row[device_col]).strip()
+            if device_raw in ("전체합계", "nan"):
+                continue
+
+            device = "모바일" if "Mobile" in device_raw or "모바일" in device_raw else "PC"
+            suffix = "MO" if device == "모바일" else "PC"
+
+            def _n(v):
+                try: return float(str(v).replace(",", "")) if str(v) not in ("nan","") else 0.0
+                except: return 0.0
+
+            imp  = int(_n(row[imp_col]))
+            clk  = int(_n(row[clk_col]))
+            cost = _n(row[cost_col])
+
+            if imp == 0 and cost == 0:
+                continue
+
+            rows.append({
+                "매체구분": "DA",
+                "매체": "ADN",
+                "캠페인유형": "ADN 배너",
+                "캠페인": f"ADN(배너)_{suffix}",
+                "날짜": date_str,
+                "기기": device,
+                "노출수": imp,
+                "클릭수": clk,
+                "총비용": cost,
+                "가입": 0.0,
+            })
+
+        result = pd.DataFrame(rows)
+        logs.append(f"✅ [ADN] 파싱 완료: {len(result)}행")
+        return result
+
+    except Exception as e:
+        logs.append(f"❌ [ADN] 파싱 오류: {e}")
+        return pd.DataFrame()
+
+
 RAW_COLS = [
     "매체구분","매체","캠페인유형","캠페인","기간","기기",
     "요일","year","month","week","week시작","week종료",
@@ -1115,7 +1362,7 @@ RAW_COLS = [
     "광고비(마크업포함,VAT포함)","서비스"
 ]
 
-def build_final_df(platform: str, d_from: str, d_to: str, tabula_file=None):
+def build_final_df(platform: str, d_from: str, d_to: str, tabula_file=None, nas_file=None, adn_file=None):
     dfs = []
     logs = []
 
@@ -1133,13 +1380,34 @@ def build_final_df(platform: str, d_from: str, d_to: str, tabula_file=None):
     if tabula_file is not None:
         tdf = parse_tabula_raw(tabula_file, logs)
         if not tdf.empty:
-            # 날짜 범위 필터링
             tdf_filtered = tdf[
                 (tdf["날짜"] >= d_from) & (tdf["날짜"] <= d_to)
             ].reset_index(drop=True)
             logs.append(f"[타뷸라] 날짜 필터({d_from}~{d_to}) 후 rows={len(tdf_filtered)}")
             if not tdf_filtered.empty:
                 dfs.append(tdf_filtered)
+
+    # ✅ NAS 리포트 파일 병합 (디지털캠프, 블라인드, 리멤버 등)
+    if nas_file is not None:
+        ndf2 = parse_nas_report(nas_file, logs)
+        if not ndf2.empty:
+            ndf2_filtered = ndf2[
+                (ndf2["날짜"] >= d_from) & (ndf2["날짜"] <= d_to)
+            ].reset_index(drop=True)
+            logs.append(f"[NAS] 날짜 필터({d_from}~{d_to}) 후 rows={len(ndf2_filtered)}")
+            if not ndf2_filtered.empty:
+                dfs.append(ndf2_filtered)
+
+    # ✅ ADN 리포트 파일 병합
+    if adn_file is not None:
+        adf = parse_adn_report(adn_file, logs)
+        if not adf.empty:
+            adf_filtered = adf[
+                (adf["날짜"] >= d_from) & (adf["날짜"] <= d_to)
+            ].reset_index(drop=True)
+            logs.append(f"[ADN] 날짜 필터({d_from}~{d_to}) 후 rows={len(adf_filtered)}")
+            if not adf_filtered.empty:
+                dfs.append(adf_filtered)
 
     if not dfs:
         return pd.DataFrame(columns=RAW_COLS), logs
@@ -1172,14 +1440,12 @@ def build_final_df(platform: str, d_from: str, d_to: str, tabula_file=None):
     df = df[RAW_COLS].sort_values("기간", na_position="last")
     return df, logs
 
-def run_all(platform, d_f, d_t, tabula_file=None):
+def run_all(platform, d_f, d_t, tabula_file=None, nas_file=None, adn_file=None):
     try:
         logs = [f"APP_VERSION: {APP_VERSION}"]
-
         d_from = str(d_f)[:10]
         d_to = str(d_t)[:10]
-
-        df, logs = build_final_df(platform, d_from, d_to, tabula_file)
+        df, logs = build_final_df(platform, d_from, d_to, tabula_file, nas_file, adn_file)
 
         if df.empty:
             return "⚠️ 데이터가 없습니다.\n" + "\n".join(logs), None, None, platform
@@ -2002,6 +2268,8 @@ def render_daily_dashboard(df: pd.DataFrame, df_prev=None, d1=None, d2=None):
                border-radius:7px; font-size:10px; font-weight:800; }
     .badge-o { display:inline-block; background:#fff7ed; color:#c2410c; padding:3px 9px;
                border-radius:7px; font-size:10px; font-weight:800; }
+    .badge-nas { display:inline-block; background:#eff6ff; color:#1d4ed8; padding:3px 9px;
+               border-radius:7px; font-size:10px; font-weight:800; }
 
     .conv-num { color:#9d174d; font-weight:900; font-size:14px; }
     .cost-num { color:#1d4ed8; font-weight:700; }
@@ -2056,6 +2324,10 @@ def render_daily_dashboard(df: pd.DataFrame, df_prev=None, d1=None, d2=None):
         "구글":  '<span class="badge-g">구글</span>',
         "타불라":'<span class="badge-o">타불라</span>',
         "타블라":'<span class="badge-o">타불라</span>',
+        "디지털캠프":'<span class="badge-nas">디지털캠프</span>',
+        "블라인드":'<span class="badge-nas">블라인드</span>',
+        "리멤버":'<span class="badge-nas">리멤버</span>',
+        "ADN":   '<span class="badge-nas">ADN</span>',
     }
 
     services_order = ["사방넷","사방넷미니","풀필먼트"]
@@ -2211,28 +2483,63 @@ with col_right:
         with col_d2:
             d2 = st.date_input("종료일", key="daily_d2")
 
-        tabula_file = st.file_uploader("📎 타뷸라 raw 파일 (선택)",
-                                       type=["csv","xlsx"], key="tabula_upload")
+        extra_files = st.file_uploader(
+            "📎 추가 파일 (타뷸라 CSV/XLSX, NAS 리포트 XLSX 등 여러 개 가능)",
+            type=["csv", "xlsx"],
+            accept_multiple_files=True,
+            key="extra_upload"
+        )
 
         if st.button("통합 엑셀 생성", type="primary", key="btn_daily"):
+            import tempfile
+
             tabula_path = None
-            if tabula_file:
-                import tempfile
-                suffix = ".xlsx" if tabula_file.name.endswith(".xlsx") else ".csv"
+            nas_path = None
+            adn_path = None
+
+            for f in (extra_files or []):
+                suffix = ".xlsx" if f.name.lower().endswith(".xlsx") else ".csv"
                 with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-                    tmp.write(tabula_file.read())
-                    tabula_path = tmp.name
+                    tmp.write(f.read())
+                    tmp_path = tmp.name
+
+                # NAS 판별: 시트명에 디지털캠프/블라인드/리멤버 등 포함 여부
+                is_nas = False
+                if suffix == ".xlsx":
+                    try:
+                        import pandas as _pd
+                        sheets = _pd.ExcelFile(tmp_path).sheet_names
+                        if any(s in NAS_SHEET_CONFIG for s in sheets):
+                            is_nas = True
+                    except Exception:
+                        pass
+
+                if is_nas:
+                    nas_path = tmp_path
+                elif suffix == ".xlsx":
+                    # ADN 판별: 첫 시트 컬럼에 '송출영역' 포함 여부
+                    try:
+                        import pandas as _pd
+                        cols = _pd.read_excel(tmp_path, sheet_name=0, nrows=1).columns.tolist()
+                        if any("송출영역" in str(c) for c in cols):
+                            adn_path = tmp_path
+                        else:
+                            tabula_path = tmp_path
+                    except Exception:
+                        tabula_path = tmp_path
+                else:
+                    tabula_path = tmp_path
 
             with st.spinner("데이터 수집 중..."):
                 log_msg, fname, saved, plat = run_all(
-                    platform, str(d1), str(d2), tabula_path
+                    platform, str(d1), str(d2), tabula_path, nas_path, adn_path
                 )
                 try:
-                    _df_today, _ = build_final_df(platform, str(d1), str(d2), tabula_path)
+                    _df_today, _ = build_final_df(platform, str(d1), str(d2), tabula_path, nas_path, adn_path)
                     from datetime import timedelta as _td
                     _d1_prev = (datetime.strptime(str(d1), "%Y-%m-%d") - _td(days=1)).strftime("%Y-%m-%d")
                     _d2_prev = (datetime.strptime(str(d2), "%Y-%m-%d") - _td(days=1)).strftime("%Y-%m-%d")
-                    _df_prev, _ = build_final_df(platform, _d1_prev, _d2_prev)
+                    _df_prev, _ = build_final_df(platform, _d1_prev, _d2_prev, nas_file=nas_path, adn_file=adn_path)
                     st.session_state.daily_df       = _df_today if not _df_today.empty else None
                     st.session_state.daily_df_prev  = _df_prev  if not _df_prev.empty  else None
                     st.session_state.daily_d1_saved = str(d1)
@@ -2561,7 +2868,7 @@ with col_right:
 - 브랜드검색(BS), 파워링크, 실적최대화 등 캠페인 유형별 전략 조언 가능
 
 [답변 스타일]
-- 친근하면서도 전문적으로, 마치 옆에 앉은 시니어 마케터처럼 대화해 다만 답변을 길게 말할 필요는 없어
+- 친근하면서도 전문적으로, 마치 옆에 앉은 시니어 마케터처럼 대화해
 - 데이터가 있으면 수치를 인용하면서 분석하고, 없으면 일반 마케팅 지식으로 답해
 - 단순 데이터 조회 질문엔 수치를 깔끔하게 정리해서 보여줘
 - 솔루션/전략 질문엔 우선순위 있는 액션 플랜으로 답해줘 (예: 📌 즉시 / 🔄 단기 / 📈 중장기)
