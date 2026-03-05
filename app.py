@@ -1300,6 +1300,9 @@ def parse_adn_report(file_path, logs=None) -> pd.DataFrame:
         clk_col = df.columns[3]
         cost_col = df.columns[6]
 
+        # 날짜 ffill: 같은 날 PC+Mobile 중 Mobile 행은 날짜가 NaN인 경우 처리
+        df[date_col] = df[date_col].ffill()
+
         rows = []
         for _, row in df.iterrows():
             date_val = str(row[date_col]).strip()
