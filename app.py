@@ -1341,6 +1341,7 @@ def parse_adn_report(file_path, logs=None) -> pd.DataFrame:
                 "매체": "ADN",
                 "캠페인유형": "ADN 배너",
                 "캠페인": f"ADN(배너)_{suffix}",
+                "서비스": "사방넷",
                 "날짜": date_str,
                 "기기": device,
                 "노출수": imp,
