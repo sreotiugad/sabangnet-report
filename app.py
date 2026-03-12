@@ -1603,16 +1603,19 @@ def format_naver_keyword_report(nk_raw: pd.DataFrame) -> pd.DataFrame:
     out["노출 수"] = nk.get("impCnt", 0).astype(int)
     out["클릭 수"] = nk.get("clkCnt", 0).astype(int)
 
-    # ✅ 광고비 컬럼 = clkAmt (클릭비용, 12번째 컬럼 = 실제 광고비)
-    # convAmt(13번)는 전환매출액이라 광고비 아님! salesAmt 이름으로 잘못 매핑되어 있었음
-    out["총 비용"] = pd.to_numeric(nk.get("clkAmt", 0), errors="coerce").fillna(0).apply(round_half_up_int)
+    # 네이버 clkAmt = VAT 제외 → 총 비용은 *1.1 (VAT포함으로 표시)
+    out["총 비용"] = pd.to_numeric(nk.get("clkAmt", 0), errors="coerce").fillna(0).apply(
+        lambda x: round_half_up_int(float(x) * 1.1)
+    )
 
     out["가입"] = pd.to_numeric(nk.get("ccnt", 0), errors="coerce").fillna(0).astype(int)
-    out["평균노출순위"] = nk.get("avgRnk", 0).astype(float)
+    out["평균노출순위"] = nk.get("avgRnk", 0).astype(float).round(1)
 
     out["가산"] = (out["노출 수"].astype(float) * out["평균노출순위"].astype(float)).fillna(0).round(1)
-    # ✅ 네이버 clkAmt = VAT제외 → *1.1 해서 VAT포함 광고비 산출 (키워드 리포트는 clkAmt 기준이라 *1.1 유지)
-    out["광고비(마크업포함,VAT포함)"] = out["총 비용"].apply(lambda x: round_half_up_int(float(x) * 1.1))
+    # 광고비(마크업포함,VAT포함) = 총 비용(VAT포함) / 1.1 → 데일리 네이버와 동일 기준
+    out["광고비(마크업포함,VAT포함)"] = out["총 비용"].apply(
+        lambda x: round_half_up_int(float(x) / 1.1)
+    )
     out["서비스"] = assign_service_from_campaign(out["캠페인"].astype(str))
 
     for c in KW_FINAL_COLS:
