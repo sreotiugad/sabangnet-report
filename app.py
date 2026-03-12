@@ -428,14 +428,49 @@ def _naver_master_report(acc, item: str, logs=None) -> list:
         z = zipfile.ZipFile(io.BytesIO(content))
         content = z.read(z.namelist()[0])
 
-    # JSON 파싱
+    # JSON 파싱 → 실패 시 TSV 폴백
     try:
         data = json.loads(content.decode("utf-8"))
         if isinstance(data, list):
             return data
         return data.get("items", data.get("data", []))
     except Exception as e:
-        logs.append(f"❌ [MasterReport] {item} JSON 파싱 실패: {e} / 원본앞: {content[:200]}")
+        logs.append(f"⚠️ [MasterReport] {item} JSON 파싱 실패, TSV 폴백 시도: {e}")
+
+    # TSV 폴백: 탭 구분 텍스트 파싱
+    try:
+        text = content.decode("utf-8")
+        lines = [l for l in text.splitlines() if l.strip()]
+
+        # item별 컬럼 인덱스 정의
+        # Campaign:  col0=customerId, col1=campaignId, col2=campaignName
+        # Adgroup:   col0=customerId, col1=adgroupId,  col2=campaignId, col3=adgroupName
+        # Keyword:   col0=customerId, col1=adgroupId,  col2=keywordId,  col3=keywordName
+        COL_MAP = {
+            "Campaign": {"id_col": 1, "name_col": 2, "id_key": "nccCampaignId",   "name_key": "campaignName"},
+            "Adgroup":  {"id_col": 1, "name_col": 3, "id_key": "nccAdgroupId",    "name_key": "adgroupName"},
+            "Keyword":  {"id_col": 2, "name_col": 3, "id_key": "nccKeywordId",    "name_key": "keyword"},
+        }
+        cfg = COL_MAP.get(item)
+        if not cfg:
+            logs.append(f"⚠️ [MasterReport] TSV 폴백: {item} 컬럼 매핑 없음")
+            return []
+
+        result = []
+        for line in lines:
+            cols = line.split("\t")
+            try:
+                result.append({
+                    cfg["id_key"]:   cols[cfg["id_col"]].strip(),
+                    cfg["name_key"]: cols[cfg["name_col"]].strip(),
+                })
+            except IndexError:
+                continue
+
+        logs.append(f"✅ [MasterReport] {item} TSV 파싱 완료: {len(result)}개")
+        return result
+    except Exception as e2:
+        logs.append(f"❌ [MasterReport] {item} TSV 파싱도 실패: {e2}")
         return []
 
 
