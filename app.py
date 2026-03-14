@@ -1455,6 +1455,9 @@ def build_final_df(platform: str, d_from: str, d_to: str, tabula_file=None, nas_
     df = add_cal_fields(df, "날짜")
     df["서비스"] = assign_service_from_campaign(df["캠페인"])
 
+    # ✅ ADN은 무조건 사방넷
+    df.loc[df["매체"] == "ADN", "서비스"] = "사방넷"
+
     bs_keys = set(BS_DAILY_FEE_VAT_INCLUDED.keys())
     is_bs = df["캠페인"].isin(bs_keys)
 
@@ -1851,14 +1854,19 @@ def _build_conv_keywords_map(platform: str, d: pd.Timestamp, top_n=5, logs=None,
         if not group_totals:
             continue
 
-        best_group = sorted(group_totals.items(), key=lambda x: x[1], reverse=True)[0][0]
-        kw_dict = group_dict.get(best_group, {})
+        # 전환 많은 그룹 순으로 최대 3개, 각 그룹에서 키워드 TOP3
+        top_groups = sorted(group_totals.items(), key=lambda x: x[1], reverse=True)[:3]
+        groups_out = []
+        for grp_name, grp_total in top_groups:
+            kw_dict = group_dict.get(grp_name, {})
+            top_kw = sorted(kw_dict.items(), key=lambda x: x[1], reverse=True)[:3]
+            groups_out.append({
+                "group": grp_name,
+                "total_conv": grp_total,
+                "keywords": [{"keyword": kw, "conv": int(cv)} for kw, cv in top_kw]
+            })
 
-        top_kw = sorted(kw_dict.items(), key=lambda x: x[1], reverse=True)[:top_n]
-        out[k] = {
-            "group": best_group,
-            "keywords": [{"keyword": kw, "conv": int(cv)} for kw, cv in top_kw]
-        }
+        out[k] = groups_out
 
     return out
 
@@ -2041,7 +2049,7 @@ def generate_daily_comment_from_excel(excel_path: str, platform: str, compare_mo
 
     for it in summary.get("issues", []):
         k = f"{it.get('service','')}|{it.get('media','')}|{it.get('campaign_type','')}"
-        it["conv_kw_pack"] = kw_map.get(k, None)
+        it["conv_kw_pack"] = kw_map.get(k, None)  # 이제 리스트 형태: [{group, total_conv, keywords}]
 
     for it in summary["issues"]:
         it["spend_decrease_hint"] = _format_spend_delta_for_decrease(it.get("spend_delta", 0))
@@ -2069,25 +2077,24 @@ def generate_daily_comment_from_excel(excel_path: str, platform: str, compare_mo
 - 번호 한 줄은 하나의 (서비스/매체/캠페인유형)
 
 [키워드 규칙]
-- 각 이슈에 conv_kw_packs가 있으면 반드시 ㄴ 줄을 1줄 작성
-- ㄴ 줄은 아래 규칙으로 작성
-  - 기본: '{{label}}에서 가입전환 {{conv}}건 발생' 형태를 여러 개 나열
-  - 여러 개일 때는 쉼표로 연결
-  - 예: ㄴ OW소재에서 가입전환 11건, 디지털보증서에서 4건 발생
-- 단, label이 '경쟁사키워드' 또는 '브랜드 키워드' 등이고 keywords가 있으면 다음 형태 허용
-  - ㄴ 경쟁사키워드 카페24, 셀메이트에서 각 1건씩 발생
-  - ㄴ 브랜드 키워드에서 가입전환 9건 발생
-- 키워드가 있는 경우에도 최대 3개까지만 표기
-- conv_kw_packs가 없으면 키워드 ㄴ 줄은 작성 금지
+- 각 이슈에 conv_kw_pack이 있으면 반드시 ㄴ 줄을 1줄 작성
+- conv_kw_pack 구조: {{"group": "그룹명", "keywords": [{{"keyword": "키워드", "conv": n}}]}}
+- ㄴ 줄 작성 형식:
+  - 그룹명과 키워드를 함께 표현: '{{그룹명}}의 {{키워드}}에서 가입전환 (+n건) 발생'
+  - 여러 키워드는 쉼표로 연결, 같은 그룹이면 그룹명은 한번만
+  - 예: ㄴ 경쟁사 그룹의 '셀메이트', '카페24'에서 가입전환 (+2건) 발생
+  - 예: ㄴ 브랜드 그룹의 '사방넷'에서 (+9건), 경쟁사 그룹의 '셀메이트'에서 (+1건) 발생
+- 최대 키워드 3개까지만 표기
+- conv_kw_pack이 없으면 키워드 ㄴ 줄 작성 금지
 - 키워드 ㄴ 줄이 있을 경우 manual_actions ㄴ 줄보다 먼저 작성
 
 
 [conv_kw_pack 데이터 구조]
-- conv_kw_pack 구조는 다음과 같다
-  {{"group": "...", "keywords": [{{"keyword": "...", "conv": n}}, ...]}}
+- conv_kw_pack은 리스트 형태: [{{"group": "그룹명", "total_conv": n, "keywords": [{{"keyword": "...", "conv": n}}]}}]
+- 여러 그룹이 있을 수 있으며 total_conv 순으로 정렬되어 있음
 
 [번호 본문 작성 규칙]
-- 각 번호 문장은 반드시 '전일대비' 또는 '전일에 이어' 같은 비교 표현으로 시작
+- 각 번호 문장은 비교 데이터를 바탕으로 자연스럽게 시작 (반드시 '전일대비'로 시작할 필요 없음)
 - 본문에는 summary.issues의 impr_pct clicks_pct spend_pct conv_diff 중 의미 있는 값만 사용
 - 원인 추정 금지
 - 가입전환은 (+n건) (-n건) 형식 유지
@@ -2095,8 +2102,10 @@ def generate_daily_comment_from_excel(excel_path: str, platform: str, compare_mo
 
 [액션 메모 규칙]
 - manual_actions가 비어있으면 액션 ㄴ 줄은 작성하지 말 것
-- manual_actions가 있으면 그대로 복사하여 ㄴ 줄에만 사용
-- 새로운 액션을 생성하거나 추측하지 말 것
+- manual_actions가 있으면 내용을 참고하여 자연스러운 광고 보고 문체로 다듬어 ㄴ 줄에 작성
+- 약어/구어체는 정식 용어로 변환 (예: ow → OW소재, 라이브 → 라이브 집행, 신규소재 → 신규소재 제작)
+- 문장 끝은 ALLOWED_ENDINGS 중 하나로 종결
+- 새로운 사실을 추가하거나 없는 내용을 만들어내지 말 것 (텍스트 워싱만 허용)
 
 """.strip()
 
