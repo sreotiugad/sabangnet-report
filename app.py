@@ -2064,7 +2064,7 @@ def generate_daily_comment_from_excel(excel_path: str, platform: str, compare_mo
   ㄴ ...
   2. ...
 - 온점(.) 사용 금지
-- 문장 끝은 {", ".join(ALLOWED_ENDINGS)} 중 하나로 종결
+- 문장 끝은 자연스럽게 마무리 (증가, 감소, 발생, 확인, 예정, 영향 등 자유롭게 사용)
 - "~하였습니다 / ~되었습니다" 금지
 - 데이터에 없는 추측 해석 원인 생성 금지
 - 인과관계 추정 금지 변동은 증감율(%) 중심으로만 작성
@@ -2073,6 +2073,7 @@ def generate_daily_comment_from_excel(excel_path: str, platform: str, compare_mo
 - 하위 설명 'ㄴ'은 반드시 본문과 줄바꿈하여 별도 줄에 작성하며 들여쓰기 유지
 - '전체' 또는 '전체 이슈' 문장 작성 금지
 - 이슈는 항상 '사방넷'으로 시작 2번은 '사방넷미니' 3번은 '풀필먼트' 우선
+- 단, '풀필먼트'는 conv_diff > 0 (가입전환 발생)인 경우에만 이슈에 포함, 전환 없으면 작성 금지
 ㄴ 줄에는 성과 비교 문장 작성 금지
 - 번호 한 줄은 하나의 (서비스/매체/캠페인유형)
 
@@ -2428,7 +2429,7 @@ def render_daily_dashboard(df: pd.DataFrame, df_prev=None, d1=None, d2=None):
 
         db_sc = _delta_badge(sc, psc); db_sv = _delta_badge(sv, psv)
         foot = f"""<tr>
-          <td colspan="2">합계</td>
+          <td>합계</td><td></td>
           <td>{int(si):,}</td><td>{int(sk):,}</td>
           <td>{_pct(sk,si)}</td><td>{_cpc(sc,sk)}</td>
           <td>{int(sc):,}원&nbsp;{db_sc}</td>
