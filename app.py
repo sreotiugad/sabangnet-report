@@ -2049,7 +2049,16 @@ def generate_daily_comment_from_excel(excel_path: str, platform: str, compare_mo
 
     for it in summary.get("issues", []):
         k = f"{it.get('service','')}|{it.get('media','')}|{it.get('campaign_type','')}"
-        it["conv_kw_pack"] = kw_map.get(k, None)  # 이제 리스트 형태: [{group, total_conv, keywords}]
+        it["conv_kw_pack"] = kw_map.get(k, None)
+
+    # 키워드 매핑 디버그 로그
+    if kw_map:
+        kw_keys = list(kw_map.keys())
+        issue_keys = [f"{it.get('service','')}|{it.get('media','')}|{it.get('campaign_type','')}" for it in summary.get('issues', [])]
+        matched = sum(1 for it in summary.get('issues', []) if it.get('conv_kw_pack'))
+        print(f"[KW_MAP] keys: {kw_keys}")
+        print(f"[ISSUES] keys: {issue_keys}")
+        print(f"[KW_MAP] 매칭된 이슈: {matched}/{len(summary.get('issues', []))}")
 
     for it in summary["issues"]:
         it["spend_decrease_hint"] = _format_spend_delta_for_decrease(it.get("spend_delta", 0))
@@ -2073,7 +2082,8 @@ def generate_daily_comment_from_excel(excel_path: str, platform: str, compare_mo
 - 하위 설명 'ㄴ'은 반드시 본문과 줄바꿈하여 별도 줄에 작성하며 들여쓰기 유지
 - '전체' 또는 '전체 이슈' 문장 작성 금지
 - 이슈는 항상 '사방넷'으로 시작 2번은 '사방넷미니' 3번은 '풀필먼트' 우선
-- 단, '풀필먼트'는 conv_diff > 0 (가입전환 발생)인 경우에만 이슈에 포함, 전환 없으면 작성 금지
+- summary.issues에 있는 항목을 빠짐없이 전부 작성 (최대 6개, 임의로 줄이지 말 것)
+- 단, '풀필먼트'는 conv_diff > 0 인 경우에만 포함, 전환 없으면 작성 금지
 ㄴ 줄에는 성과 비교 문장 작성 금지
 - 번호 한 줄은 하나의 (서비스/매체/캠페인유형)
 
