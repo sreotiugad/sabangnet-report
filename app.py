@@ -62,6 +62,25 @@ os.environ["NAVER2_CUSTOMER_ID"] = _secret("NAVER2_CUSTOMER_ID")
 os.environ["NAVER2_API_KEY"]     = _secret("NAVER2_API_KEY")
 os.environ["NAVER2_SECRET_KEY"]  = _secret("NAVER2_SECRET_KEY")
 
+# ---- Meta ----
+META_ACCESS_TOKEN  = _secret("META_ACCESS_TOKEN")
+META_AD_ACCOUNT_ID = _secret("META_AD_ACCOUNT_ID")
+META_GRAPH_BASE    = "https://graph.facebook.com/v21.0"
+META_DEVICE_MAP = {
+    "desktop": "PC",
+    "android_smartphone": "모바일", "android_tablet": "모바일",
+    "iphone": "모바일", "ipad": "모바일",
+    "mobile_app": "모바일", "mobile_web": "모바일",
+}
+META_OBJECTIVE_VIDEO = {"VIDEO_VIEWS", "OUTCOME_VIDEO_VIEWS"}
+META_CONV_ACTIONS    = {"lead", "complete_registration", "offsite_conversion.fb_pixel_lead"}
+META_FILE_DEVICE_MAP = {
+    "desktop": "PC",
+    "android_smartphone": "모바일", "android_tablet": "모바일",
+    "iphone": "모바일", "ipad": "모바일",
+    "mobile_app": "모바일", "mobile_web": "모바일",
+}
+
 
 
 NAVER_BASE_URL = "https://api.searchad.naver.com"
@@ -1401,19 +1420,117 @@ RAW_COLS = [
     "광고비(마크업포함,VAT포함)","서비스"
 ]
 
-def build_final_df(platform: str, d_from: str, d_to: str, tabula_file=None, nas_file=None, adn_file=None):
+def get_meta_data(d_from, d_to, logs=None):
+    if logs is None:
+        logs = []
+    if not META_ACCESS_TOKEN or not META_AD_ACCOUNT_ID:
+        logs.append("⚠️ META 환경변수 없음 (META_ACCESS_TOKEN, META_AD_ACCOUNT_ID)")
+        return pd.DataFrame(), logs
+    account = META_AD_ACCOUNT_ID if META_AD_ACCOUNT_ID.startswith("act_") else f"act_{META_AD_ACCOUNT_ID}"
+    url = f"{META_GRAPH_BASE}/{account}/insights"
+    params = {
+        "access_token": META_ACCESS_TOKEN,
+        "fields": "campaign_name,objective,impressions,clicks,spend,actions",
+        "time_range": json.dumps({"since": d_from, "until": d_to}),
+        "time_increment": "1", "level": "campaign",
+        "breakdowns": "impression_device", "limit": "500",
+    }
+    rows = []
+    try:
+        while True:
+            r = requests.get(url, params=params, timeout=60)
+            if r.status_code != 200:
+                logs.append(f"❌ META API 실패 status={r.status_code} body={r.text[:300]}")
+                break
+            j = r.json()
+            for item in j.get("data", []):
+                device = META_DEVICE_MAP.get(str(item.get("impression_device", "")).lower(), "모바일")
+                objective = str(item.get("objective", "")).upper()
+                media_div, camp_type = ("VA", "동영상") if objective in META_OBJECTIVE_VIDEO else ("DA", "디스플레이")
+                conv = sum(float(a.get("value", 0)) for a in (item.get("actions") or []) if a.get("action_type") in META_CONV_ACTIONS)
+                rows.append({
+                    "매체구분": media_div, "매체": "메타", "캠페인유형": camp_type,
+                    "캠페인": str(item.get("campaign_name", "")),
+                    "날짜": str(item.get("date_start", ""))[:10],
+                    "기기": device,
+                    "노출수": int(item.get("impressions", 0) or 0),
+                    "클릭수": int(item.get("clicks", 0) or 0),
+                    "총비용": float(item.get("spend", 0) or 0),
+                    "가입": conv,
+                })
+            next_url = j.get("paging", {}).get("next")
+            if not next_url:
+                break
+            url = next_url
+            params = {}
+        logs.append(f"[META] 완료 rows={len(rows)}")
+    except Exception as e:
+        logs.append(f"❌ META 오류: {e}\n{traceback.format_exc()}")
+    return pd.DataFrame(rows), logs
+
+def parse_meta_raw(file_path, logs=None) -> pd.DataFrame:
+    if logs is None:
+        logs = []
+    try:
+        ext = str(file_path).lower()
+        if ext.endswith(".csv"):
+            try: df_raw = pd.read_csv(file_path, encoding="utf-8")
+            except UnicodeDecodeError: df_raw = pd.read_csv(file_path, encoding="cp949")
+        else:
+            df_raw = pd.read_excel(file_path)
+        df_raw.columns = df_raw.columns.str.strip()
+        required = {"캠페인 이름", "일", "노출", "링크 클릭", "지출 금액 (KRW)", "등록 완료"}
+        missing = required - set(df_raw.columns)
+        if missing:
+            logs.append(f"❌ [메타파일] 필수 컬럼 없음: {missing}")
+            return pd.DataFrame()
+        df = df_raw.copy()
+        for col in ["노출", "링크 클릭", "지출 금액 (KRW)", "등록 완료"]:
+            df[col] = pd.to_numeric(df[col].astype(str).str.replace(",", "", regex=False), errors="coerce").fillna(0)
+        df["날짜"] = pd.to_datetime(df["일"], errors="coerce").dt.strftime("%Y-%m-%d")
+        device_raw = df["노출 기기"].astype(str).str.strip().str.lower() if "노출 기기" in df.columns else pd.Series([""] * len(df))
+        df["기기"] = device_raw.map(META_FILE_DEVICE_MAP).fillna("모바일")
+        rows_df = pd.DataFrame({
+            "매체구분": "DA", "매체": "메타", "캠페인유형": "디스플레이",
+            "캠페인": df["캠페인 이름"].astype(str).str.strip(),
+            "날짜": df["날짜"], "기기": df["기기"],
+            "노출수": df["노출"].astype(int), "클릭수": df["링크 클릭"].astype(int),
+            "총비용": df["지출 금액 (KRW)"], "가입": df["등록 완료"],
+        })
+        rows_df = rows_df[rows_df["날짜"].notna()].reset_index(drop=True)
+        logs.append(f"✅ [메타파일] 파싱 완료 rows={len(rows_df)}")
+        return rows_df
+    except Exception as e:
+        logs.append(f"❌ [메타파일] 파싱 오류: {e}")
+        return pd.DataFrame()
+
+def build_final_df(platform: str, d_from: str, d_to: str, tabula_file=None, nas_file=None, adn_file=None, meta_file=None):
     dfs = []
     logs = []
 
-    if "Google" in platform:
-        gdf, logs = get_g_data(d_from, d_to, logs)
-        if not gdf.empty:
-            dfs.append(gdf)
+    api_tasks = {}
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        if "Google" in platform:
+            api_tasks["Google"] = executor.submit(get_g_data, d_from, d_to, [])
+        if "Naver" in platform:
+            api_tasks["Naver"] = executor.submit(get_n_data, d_from, d_to, [])
+        if "Meta" in platform:
+            api_tasks["Meta"] = executor.submit(get_meta_data, d_from, d_to, [])
+    for key, future in api_tasks.items():
+        try:
+            df, _logs = future.result()
+            logs.extend(_logs)
+            if not df.empty:
+                dfs.append(df)
+        except Exception as e:
+            logs.append(f"❌ {key} API 오류: {e}")
 
-    if "Naver" in platform:
-        ndf, logs = get_n_data(d_from, d_to, logs)
-        if not ndf.empty:
-            dfs.append(ndf)
+    if meta_file is not None:
+        mfdf = parse_meta_raw(meta_file, logs)
+        if not mfdf.empty:
+            mfdf_f = mfdf[(mfdf["날짜"] >= d_from) & (mfdf["날짜"] <= d_to)].reset_index(drop=True)
+            if not mfdf_f.empty:
+                dfs.append(mfdf_f)
 
     # ✅ 타뷸라 raw 파일 병합
     if tabula_file is not None:
@@ -1482,12 +1599,12 @@ def build_final_df(platform: str, d_from: str, d_to: str, tabula_file=None, nas_
     df = df[RAW_COLS].sort_values("기간", na_position="last")
     return df, logs
 
-def run_all(platform, d_f, d_t, tabula_file=None, nas_file=None, adn_file=None):
+def run_all(platform, d_f, d_t, tabula_file=None, nas_file=None, adn_file=None, meta_file=None):
     try:
         logs = [f"APP_VERSION: {APP_VERSION}"]
         d_from = str(d_f)[:10]
         d_to = str(d_t)[:10]
-        df, logs = build_final_df(platform, d_from, d_to, tabula_file, nas_file, adn_file)
+        df, logs = build_final_df(platform, d_from, d_to, tabula_file, nas_file, adn_file, meta_file)
 
         if df.empty:
             return "⚠️ 데이터가 없습니다.\n" + "\n".join(logs), None, None, platform
@@ -2558,6 +2675,7 @@ with col_right:
             tabula_path = None
             nas_path = None
             adn_path = None
+            meta_path = None
 
             for f in (extra_files or []):
                 suffix = ".xlsx" if f.name.lower().endswith(".xlsx") else ".csv"
@@ -2565,9 +2683,22 @@ with col_right:
                     tmp.write(f.read())
                     tmp_path = tmp.name
 
+                # 메타 판별: 컬럼에 '캠페인 이름' + '노출 기기' 포함
+                is_meta = False
+                try:
+                    import pandas as _pd
+                    if suffix == ".csv":
+                        _cols = _pd.read_csv(tmp_path, nrows=0).columns.tolist()
+                    else:
+                        _cols = _pd.read_excel(tmp_path, nrows=0).columns.tolist()
+                    if "캠페인 이름" in _cols and ("노출 기기" in _cols or "링크 클릭" in _cols):
+                        is_meta = True
+                except Exception:
+                    pass
+
                 # NAS 판별: 시트명에 디지털캠프/블라인드/리멤버 등 포함 여부
                 is_nas = False
-                if suffix == ".xlsx":
+                if not is_meta and suffix == ".xlsx":
                     try:
                         import pandas as _pd
                         sheets = _pd.ExcelFile(tmp_path).sheet_names
@@ -2576,7 +2707,9 @@ with col_right:
                     except Exception:
                         pass
 
-                if is_nas:
+                if is_meta:
+                    meta_path = tmp_path
+                elif is_nas:
                     nas_path = tmp_path
                 elif suffix == ".xlsx":
                     # ADN 판별: 첫 시트 컬럼에 '송출영역' 포함 여부
@@ -2594,14 +2727,14 @@ with col_right:
 
             with st.spinner("데이터 수집 중..."):
                 log_msg, fname, saved, plat = run_all(
-                    platform, str(d1), str(d2), tabula_path, nas_path, adn_path
+                    platform, str(d1), str(d2), tabula_path, nas_path, adn_path, meta_path
                 )
                 try:
-                    _df_today, _ = build_final_df(platform, str(d1), str(d2), tabula_path, nas_path, adn_path)
+                    _df_today, _ = build_final_df(platform, str(d1), str(d2), tabula_path, nas_path, adn_path, meta_path)
                     from datetime import timedelta as _td
                     _d1_prev = (datetime.strptime(str(d1), "%Y-%m-%d") - _td(days=1)).strftime("%Y-%m-%d")
                     _d2_prev = (datetime.strptime(str(d2), "%Y-%m-%d") - _td(days=1)).strftime("%Y-%m-%d")
-                    _df_prev, _ = build_final_df(platform, _d1_prev, _d2_prev, nas_file=nas_path, adn_file=adn_path)
+                    _df_prev, _ = build_final_df(platform, _d1_prev, _d2_prev, nas_file=nas_path, adn_file=adn_path, meta_file=meta_path)
                     st.session_state.daily_df       = _df_today if not _df_today.empty else None
                     st.session_state.daily_df_prev  = _df_prev  if not _df_prev.empty  else None
                     st.session_state.daily_d1_saved = str(d1)
