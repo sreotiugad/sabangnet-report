@@ -665,6 +665,8 @@ def get_n_keyword_data_report(d_from, d_to, report_tp="AD", logs=None) -> pd.Dat
                 conv_kw_agg = conv_kw.groupby(["keywordId","pcMblTp"], as_index=False)["ccnt"].sum()
                 df_ad = df_ad.merge(conv_kw_agg, on=["keywordId","pcMblTp"], how="left")
                 df_ad["ccnt"] = df_ad["ccnt"].fillna(0)
+                _convsum = float(conv_kw_agg["ccnt"].sum()) if not conv_kw_agg.empty else 0
+                logs.append(f"[진단] day={day} 전환키워드={len(conv_kw_agg)}건/합계={_convsum} → df_ad매칭={int((df_ad['ccnt']>0).sum())}행 ccnt합={float(df_ad['ccnt'].sum())}")
 
                 conv_grp = df_conv[df_conv["keywordId"].astype(str).str.strip() == "-"]
                 if not conv_grp.empty:
