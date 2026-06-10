@@ -622,6 +622,7 @@ def get_n_keyword_data_report(d_from, d_to, report_tp="AD", logs=None) -> pd.Dat
         logs = []
 
     all_dfs = []
+    conv_all = []   # 기간 전체 전환 수집 (전환일≠노출일 보정)
     days = _date_list_yyyymmdd(d_from, d_to)
 
     for acc in NAVER_ACCOUNTS:
@@ -663,6 +664,7 @@ def get_n_keyword_data_report(d_from, d_to, report_tp="AD", logs=None) -> pd.Dat
 
                 conv_kw = df_conv[df_conv["keywordId"].astype(str).str.strip() != "-"]
                 conv_kw_agg = conv_kw.groupby(["keywordId","pcMblTp"], as_index=False)["ccnt"].sum()
+                conv_all.append(conv_kw_agg[["keywordId","ccnt"]].copy())
                 df_ad = df_ad.merge(conv_kw_agg, on=["keywordId","pcMblTp"], how="left")
                 df_ad["ccnt"] = df_ad["ccnt"].fillna(0)
                 _convsum = float(conv_kw_agg["ccnt"].sum()) if not conv_kw_agg.empty else 0
@@ -689,6 +691,19 @@ def get_n_keyword_data_report(d_from, d_to, report_tp="AD", logs=None) -> pd.Dat
 
     if result.empty:
         return result
+        # 가입전환 재부여: 전환일≠노출일 보정 (기간 전체 키워드 단위 합산)
+    if conv_all:
+        conv_tot = pd.concat(conv_all, ignore_index=True).groupby("keywordId", as_index=False)["ccnt"].sum()
+        conv_map = dict(zip(conv_tot["keywordId"].astype(str),
+                            pd.to_numeric(conv_tot["ccnt"], errors="coerce").fillna(0)))
+        if "keywordId" in result.columns and conv_map:
+            result["ccnt"] = 0.0
+            _seen = set()
+            for _ix in result.index:
+                _kid = str(result.at[_ix, "keywordId"])
+                if _kid in conv_map and _kid not in _seen:
+                    result.at[_ix, "ccnt"] = float(conv_map[_kid])
+                    _seen.add(_kid)
 
     # 중복 제거 (날짜별 집계는 루프 내에서 이미 완료)
     dedup_cols = ["statDt","campaignId","adgroupId","keywordName","pcMblTp"]
