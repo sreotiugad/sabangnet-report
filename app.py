@@ -2644,7 +2644,7 @@ with col_right:
 
     with tab_daily:
         platform = st.radio("플랫폼", ["Google", "Naver", "Meta", "Google+Naver", "Google+Naver+Meta"],
-                            index=3, horizontal=True, key="daily_platform")
+                            index=4, horizontal=True, key="daily_platform")
 
         preset = st.selectbox("기간", ["주간(월~일)", "어제", "지난 7일", "지난 30일", "이번 달", "직접선택"],
                               index=1, key="daily_preset")
