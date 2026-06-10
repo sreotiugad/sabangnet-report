@@ -793,6 +793,12 @@ def _fetch_naver_report_day(acc, day, report_tp, camp_map, grp_map, kw_map, logs
             ]
 
         df = pd.read_csv(io.StringIO(txt), sep="\t", header=None, names=base_cols, engine="python")
+        # 네이버 AD 13번째(convAmt)는 '노출순위 가중합', 14번째(avgRnk)는 미사용(0).
+        # 평균노출순위 = 가중합 ÷ 노출수
+        if report_tp == "AD" and "convAmt" in df.columns and "impCnt" in df.columns:
+            _imp  = pd.to_numeric(df["impCnt"],  errors="coerce").fillna(0)
+            _wrnk = pd.to_numeric(df["convAmt"], errors="coerce").fillna(0)
+            df["avgRnk"] = (_wrnk / _imp.replace(0, pd.NA)).fillna(0).round(1)
         df["campaignName"] = df["campaignId"].map(camp_map).fillna(df["campaignId"])
         df["adgroupName"]  = df["adgroupId"].map(grp_map).fillna(df["adgroupId"])
         if report_tp == "EXPKEYWORD":
@@ -1646,7 +1652,7 @@ def run_all(platform, d_f, d_t, tabula_file=None, nas_file=None, adn_file=None, 
 # =========================================================
 KW_FINAL_COLS = [
     "월","주간","매체","매체 구분","캠페인 유형","캠페인","그룹","키워드","기기",
-    "노출 수","클릭 수","총 비용","가입","평균노출순위","가산","광고비(마크업포함,VAT포함)","서비스"
+    "노출 수","클릭 수","총 비용","가입","평균노출순위","광고비(마크업포함,VAT포함)","서비스"
 ]
 
 def _month_week_from_dt(dt_series: pd.Series):
@@ -1730,8 +1736,6 @@ def format_naver_keyword_report(nk_raw: pd.DataFrame) -> pd.DataFrame:
 
     out["가입"] = pd.to_numeric(nk.get("ccnt", 0), errors="coerce").fillna(0).astype(int)
     out["평균노출순위"] = nk.get("avgRnk", 0).astype(float).round(1)
-
-    out["가산"] = (out["노출 수"].astype(float) * out["평균노출순위"].astype(float)).fillna(0).round(1)
     # 광고비(마크업포함,VAT포함) = 총 비용(VAT포함) / 1.1 → 데일리 네이버와 동일 기준
     out["광고비(마크업포함,VAT포함)"] = out["총 비용"].apply(
         lambda x: round_half_up_int(float(x) / 1.1)
@@ -1774,10 +1778,6 @@ def format_google_keyword_report(gk_raw: pd.DataFrame) -> pd.DataFrame:
     out["가입"] = pd.to_numeric(gk.get("가입", 0), errors="coerce").fillna(0).astype(float)
 
     out["평균노출순위"] = 0.0
-    out["가산"] = (
-        pd.to_numeric(out["노출 수"], errors="coerce").fillna(0) *
-        pd.to_numeric(out["평균노출순위"], errors="coerce").fillna(0)
-    ).round(1)
 
     out["광고비(마크업포함,VAT포함)"] = (out["총 비용"].astype(float) * 1.1).round(1)
     out["서비스"] = assign_service_from_campaign(out["캠페인"].astype(str))
