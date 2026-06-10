@@ -73,7 +73,7 @@ META_DEVICE_MAP = {
     "mobile_app": "모바일", "mobile_web": "모바일",
 }
 META_OBJECTIVE_VIDEO = {"VIDEO_VIEWS", "OUTCOME_VIDEO_VIEWS"}
-META_CONV_ACTIONS    = {"offsite_conversion.fb_pixel_complete_registration", "complete_registration"}
+META_CONV_ACTIONS    = {"complete_registration"}
 META_FILE_DEVICE_MAP = {
     "desktop": "PC",
     "android_smartphone": "모바일", "android_tablet": "모바일",
