@@ -101,14 +101,49 @@ NAVER_ACCOUNTS = _load_naver_accounts()
 # =========================================================
 # ✅ 1) 브랜드검색 일별 광고비 (VAT 포함)
 # =========================================================
-BS_DAILY_FEE_VAT_INCLUDED = {
-    "사방넷_BS_MO": Decimal("2640000") / Decimal("90"),
-    "사방넷_BS_PC": Decimal("3960000") / Decimal("90"),
-    "풀필먼트_BS_PC": Decimal("1980000") / Decimal("90"),
-    "풀필먼트_BS_MO": Decimal("1980000") / Decimal("90"),
-    "미니_BS_PC": Decimal("1980000") / Decimal("90"),
-    "미니_BS_MO": Decimal("2640000") / Decimal("90"),
+# 캠페인별 브랜드검색 계약: (시작일, 종료일, 일별광고비 VAT포함)
+#  - 날짜는 ISO("YYYY-MM-DD"), None = 무제한(경계 없음)
+#  - 같은 서비스라도 계약 기간이 다르면 별도 캠페인으로 등록(네이버에 별도 캠페인명 존재)
+#  - 기존(구) 계약은 2026-06-20까지, 신규(2026) 계약은 2026-06-21~2026-09-18
+#  - 신규 계약 금액은 표기상 VAT 미포함(vat-) 이므로 ×1.1 하여 VAT포함으로 저장
+BS_CONTRACTS = {
+    # ── 구 계약 (~2026-06-20), 금액은 이미 VAT 포함 ──
+    "사방넷_BS_MO":   (None, "2026-06-20", Decimal("2640000") / Decimal("90")),
+    "사방넷_BS_PC":   (None, "2026-06-20", Decimal("3960000") / Decimal("90")),
+    "풀필먼트_BS_PC": (None, "2026-06-20", Decimal("1980000") / Decimal("90")),
+    "풀필먼트_BS_MO": (None, "2026-06-20", Decimal("1980000") / Decimal("90")),
+    "미니_BS_PC":     (None, "2026-06-20", Decimal("1980000") / Decimal("90")),
+    "미니_BS_MO":     (None, "2026-06-20", Decimal("2640000") / Decimal("90")),
+    # ── 신규 계약 (2026-06-21 ~ 2026-09-18), 표기 VAT- → ×1.1 ──
+    "사방넷_BS_PC(2026)":   ("2026-06-21", "2026-09-18", Decimal("4200000") * Decimal("1.1") / Decimal("90")),
+    "사방넷_BS_MO(2026)":   ("2026-06-21", "2026-09-18", Decimal("2400000") * Decimal("1.1") / Decimal("90")),
+    "미니_BS_PC(2026)":     ("2026-06-21", "2026-09-18", Decimal("2100000") * Decimal("1.1") / Decimal("90")),
+    "미니_BS_MO(2026)":     ("2026-06-21", "2026-09-18", Decimal("2400000") * Decimal("1.1") / Decimal("90")),
+    "풀필먼트_BS_PC(2026)": ("2026-06-21", "2026-09-18", Decimal("2100000") * Decimal("1.1") / Decimal("90")),
+    "풀필먼트_BS_MO(2026)": ("2026-06-21", "2026-09-18", Decimal("2400000") * Decimal("1.1") / Decimal("90")),
 }
+
+# 하위호환: 캠페인 → 일별광고비(기간 무시한 단순 단가 조회용)
+BS_DAILY_FEE_VAT_INCLUDED = {k: v[2] for k, v in BS_CONTRACTS.items()}
+
+
+def _bs_device(campaign: str) -> str:
+    """브랜드검색 캠페인명에서 기기 판별 ('_PC' 포함 → PC, 그 외 모바일). '(2026)' 접미사 대응."""
+    return "PC" if "_PC" in str(campaign) else "모바일"
+
+
+def bs_daily_fee(campaign: str, date_iso: str):
+    """해당 캠페인이 그 날짜에 계약 기간 내이면 일별광고비(VAT포함, Decimal) 반환, 아니면 None."""
+    info = BS_CONTRACTS.get(str(campaign))
+    if not info:
+        return None
+    d_from, d_to, fee = info
+    d = str(date_iso)[:10]
+    if d_from and d < d_from:
+        return None
+    if d_to and d > d_to:
+        return None
+    return fee
 
 # =========================================================
 # ✅ 2) 공용 유틸(절대 안전)
@@ -349,9 +384,9 @@ def pick_naver_device_from_item(item: dict):
 
 def infer_device_from_campaign_name(cname: str) -> str:
     s = str(cname or "")
-    if s.endswith("_PC") or s.endswith("PC"):
+    if "_PC" in s or s.endswith("PC"):
         return "PC"
-    if s.endswith("_MO") or s.endswith("MO") or s.endswith("_M") or "모바일" in s:
+    if "_MO" in s or s.endswith("MO") or s.endswith("_M") or "모바일" in s:
         return "모바일"
     return "전체"
 
@@ -847,7 +882,7 @@ def _date_range_iso(d_from: str, d_to: str):
     return out
 
 def fill_missing_brandsearch_rows(df: pd.DataFrame, d_from: str, d_to: str) -> pd.DataFrame:
-    bs_keys = list(BS_DAILY_FEE_VAT_INCLUDED.keys())
+    bs_keys = list(BS_CONTRACTS.keys())
     all_dates = _date_range_iso(d_from, d_to)
 
     if df is None or df.empty:
@@ -860,15 +895,16 @@ def fill_missing_brandsearch_rows(df: pd.DataFrame, d_from: str, d_to: str) -> p
         for camp in bs_keys:
             if (dt, camp) in existing:
                 continue
-            device = "PC" if camp.endswith("_PC") else "모바일"
-            fee = BS_DAILY_FEE_VAT_INCLUDED[camp]
+            fee = bs_daily_fee(camp, dt)
+            if fee is None:
+                continue  # 해당 날짜에 계약 기간이 아닌 캠페인은 행을 만들지 않음(이중계상 방지)
             new_rows.append({
                 "매체구분": "SA",
                 "매체": "네이버",
                 "캠페인유형": "브랜드검색/신제품검색",
                 "캠페인": camp,
                 "날짜": dt,
-                "기기": device,
+                "기기": _bs_device(camp),
                 "노출수": 0,
                 "클릭수": 0,
                 "총비용": float(fee),
@@ -880,8 +916,14 @@ def fill_missing_brandsearch_rows(df: pd.DataFrame, d_from: str, d_to: str) -> p
 
     is_bs = df["캠페인"].isin(bs_keys)
     if is_bs.any():
-        df.loc[is_bs, "총비용"] = df.loc[is_bs, "캠페인"].map(lambda k: float(BS_DAILY_FEE_VAT_INCLUDED[k]))
-        df.loc[is_bs, "기기"] = np.where(df.loc[is_bs, "캠페인"].astype(str).str.endswith("_PC"), "PC", "모바일")
+        # 총비용은 날짜별 계약 단가로 재설정(계약 기간 외 행은 기존값 유지)
+        df.loc[is_bs, "총비용"] = [
+            float(fee) if (fee := bs_daily_fee(c, d)) is not None else cost
+            for c, d, cost in zip(
+                df.loc[is_bs, "캠페인"], df.loc[is_bs, "날짜"], df.loc[is_bs, "총비용"]
+            )
+        ]
+        df.loc[is_bs, "기기"] = df.loc[is_bs, "캠페인"].map(_bs_device)
         df.loc[is_bs, "캠페인유형"] = "브랜드검색/신제품검색"
 
     return df
@@ -940,7 +982,11 @@ def get_n_data(d_from, d_to, logs=None):
                 cost = Decimal(str(item.get("salesAmt", 0) or 0))
 
                 if cname in bs_keys:
-                    cost = BS_DAILY_FEE_VAT_INCLUDED.get(cname, cost)
+                    fee = bs_daily_fee(cname, dt_norm)
+                    if fee is None:
+                        # 계약 기간 외 BS 캠페인 데이터(노출이 있어도) 제외 → 기간별 단가만 반영
+                        continue
+                    cost = fee
 
                 if (imp == 0) and (cname not in bs_keys):
                     continue
