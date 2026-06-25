@@ -81,6 +81,13 @@ META_FILE_DEVICE_MAP = {
     "mobile_app": "모바일", "mobile_web": "모바일",
 }
 
+# ---- Taboola ----
+TABOOLA_CLIENT_ID     = _secret("TABOOLA_CLIENT_ID")
+TABOOLA_CLIENT_SECRET = _secret("TABOOLA_CLIENT_SECRET")
+TABOOLA_ACCOUNT_ID    = _secret("TABOOLA_ACCOUNT_ID")
+TABOOLA_OAUTH_URL     = "https://backstage.taboola.com/backstage/oauth/token"
+TABOOLA_API_BASE      = "https://backstage.taboola.com/backstage/api/1.0"
+
 
 
 NAVER_BASE_URL = "https://api.searchad.naver.com"
@@ -1071,6 +1078,17 @@ TABULA_CAMPAIGN_NAME_MAP = {
     "?щ갑??諛곕꼫)_PC":     "사방넷(배너)_PC",
 }
 
+# 타뷸라 API 응답은 캠페인명 자체가 서버 단에서 깨져서 내려오므로,
+# 캠페인 ID(campaign 필드) 기준으로 정상 이름을 매핑한다.
+TABOOLA_CAMPAIGN_ID_MAP = {
+    "48190437": "사방넷_PC",
+    "48190439": "사방넷_MO",
+    "48192352": "사방넷(배너)_PC",
+    "48192747": "사방넷(배너)_MO",
+    "48239628": "사방넷(네이티브)_MO",
+    "48239889": "사방넷(네이티브)_PC",
+}
+
 def parse_tabula_raw(file_path, logs=None) -> pd.DataFrame:
     """
     타뷸라 raw 파일(CSV or XLSX) 파싱
@@ -1158,6 +1176,75 @@ def parse_tabula_raw(file_path, logs=None) -> pd.DataFrame:
     except Exception as e:
         logs.append(f"❌ [타뷸라] 파싱 오류: {e}")
         return pd.DataFrame()
+
+def _taboola_get_token(logs):
+    resp = requests.post(
+        TABOOLA_OAUTH_URL,
+        data={
+            "client_id": TABOOLA_CLIENT_ID,
+            "client_secret": TABOOLA_CLIENT_SECRET,
+            "grant_type": "client_credentials",
+        },
+        timeout=30,
+    )
+    if resp.status_code != 200:
+        logs.append(f"❌ [타뷸라] 토큰 발급 실패 status={resp.status_code} body={resp.text[:300]}")
+        return None
+    return resp.json().get("access_token")
+
+def get_taboola_data(d_from, d_to, logs=None) -> "tuple[pd.DataFrame, list]":
+    """타뷸라 Backstage Reports API로 캠페인×일자 성과 조회"""
+    if logs is None:
+        logs = []
+    if not (TABOOLA_CLIENT_ID and TABOOLA_CLIENT_SECRET and TABOOLA_ACCOUNT_ID):
+        logs.append("⚠️ [타뷸라] 환경변수 없음 (TABOOLA_CLIENT_ID, TABOOLA_CLIENT_SECRET, TABOOLA_ACCOUNT_ID)")
+        return pd.DataFrame(), logs
+
+    try:
+        access_token = _taboola_get_token(logs)
+        if not access_token:
+            return pd.DataFrame(), logs
+
+        url = f"{TABOOLA_API_BASE}/{TABOOLA_ACCOUNT_ID}/reports/campaign-summary/dimensions/campaign_day_breakdown"
+        headers = {"Authorization": f"Bearer {access_token}"}
+        params = {"start_date": d_from, "end_date": d_to}
+        r = requests.get(url, headers=headers, params=params, timeout=60)
+        if r.status_code != 200:
+            logs.append(f"❌ [타뷸라] 리포트 조회 실패 status={r.status_code} body={r.text[:300]}")
+            return pd.DataFrame(), logs
+
+        results = r.json().get("results", [])
+        if results:
+            logs.append(f"[타뷸라] API 응답 샘플 키: {list(results[0].keys())}")
+
+        rows = []
+        for item in results:
+            cid = str(item.get("campaign", "")).strip()
+            cname = TABOOLA_CAMPAIGN_ID_MAP.get(cid)
+            if cname is None:
+                # 매핑되지 않은 캠페인(예: 테스트 캠페인)은 건너뜀
+                continue
+            device = "PC" if cname.endswith("_PC") else "모바일"
+            rows.append({
+                "매체구분": "DA",
+                "매체": "타불라",
+                "캠페인유형": "배너",
+                "캠페인": cname,
+                "날짜": str(item.get("date", ""))[:10],
+                "기기": device,
+                "노출수": int(item.get("impressions", 0) or 0),
+                "클릭수": int(item.get("clicks", 0) or 0),
+                "총비용": float(item.get("spent", 0) or 0),
+                "가입": float(item.get("conversions_value", 0) or item.get("cpa_actions_num", 0) or 0),
+            })
+
+        df = pd.DataFrame(rows)
+        df = df[df["날짜"].astype(str).str.len() > 0].reset_index(drop=True) if not df.empty else df
+        logs.append(f"✅ [타뷸라] API 완료 rows={len(df)}")
+        return df, logs
+    except Exception as e:
+        logs.append(f"❌ [타뷸라] API 오류: {e}\n{traceback.format_exc()}")
+        return pd.DataFrame(), logs
 
 # =========================================================
 # ✅ 6-3) NAS (디지털캠프 등) 리포트 파싱
@@ -1516,12 +1603,16 @@ def build_final_df(platform: str, d_from: str, d_to: str, tabula_file=None, nas_
             api_tasks["Naver"] = executor.submit(get_n_data, d_from, d_to, [])
         if "Meta" in platform:
             api_tasks["Meta"] = executor.submit(get_meta_data, d_from, d_to, [])
+        api_tasks["Taboola"] = executor.submit(get_taboola_data, d_from, d_to, [])
+    taboola_api_ok = False
     for key, future in api_tasks.items():
         try:
             df, _logs = future.result()
             logs.extend(_logs)
             if not df.empty:
                 dfs.append(df)
+                if key == "Taboola":
+                    taboola_api_ok = True
         except Exception as e:
             logs.append(f"❌ {key} API 오류: {e}")
 
@@ -1532,8 +1623,8 @@ def build_final_df(platform: str, d_from: str, d_to: str, tabula_file=None, nas_
             if not mfdf_f.empty:
                 dfs.append(mfdf_f)
 
-    # ✅ 타뷸라 raw 파일 병합
-    if tabula_file is not None:
+    # ✅ 타뷸라 raw 파일 병합 (API 호출이 성공했으면 중복 방지를 위해 건너뜀)
+    if tabula_file is not None and not taboola_api_ok:
         tdf = parse_tabula_raw(tabula_file, logs)
         if not tdf.empty:
             tdf_filtered = tdf[
