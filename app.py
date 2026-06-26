@@ -1672,7 +1672,8 @@ def build_final_df(platform: str, d_from: str, d_to: str, tabula_file=None, nas_
             api_tasks["Naver"] = executor.submit(get_n_data, d_from, d_to, [])
         if "Meta" in platform:
             api_tasks["Meta"] = executor.submit(get_meta_data, d_from, d_to, [])
-        api_tasks["Taboola"] = executor.submit(get_taboola_data, d_from, d_to, [])
+        if "Taboola" in platform:
+            api_tasks["Taboola"] = executor.submit(get_taboola_data, d_from, d_to, [])
     taboola_api_ok = False
     for key, future in api_tasks.items():
         try:
@@ -2797,8 +2798,8 @@ with col_right:
     tab_daily, tab_kw = st.tabs(["📌 데일리 리포트", "🔎 키워드 성과"])
 
     with tab_daily:
-        platform = st.radio("플랫폼", ["Google", "Naver", "Meta", "Google+Naver", "Google+Naver+Meta"],
-                            index=4, horizontal=True, key="daily_platform")
+        platform = st.radio("플랫폼", ["Google", "Naver", "Meta", "Taboola", "Google+Naver", "Google+Naver+Meta", "Google+Naver+Meta+Taboola"],
+                            index=5, horizontal=True, key="daily_platform")
 
         preset = st.selectbox("기간", ["주간(월~일)", "어제", "지난 7일", "지난 30일", "이번 달", "직접선택"],
                               index=1, key="daily_preset")
