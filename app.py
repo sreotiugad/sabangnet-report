@@ -1055,8 +1055,16 @@ def get_g_data(d_from, d_to, logs=None):
 
     rows = []
     d_map = {"DESKTOP": "PC", "MOBILE": "모바일", "TABLET": "모바일"}
-    div_map = {"SEARCH": "SA", "DISPLAY": "DA", "VIDEO": "VA", "PERFORMANCE_MAX": "DA"}
-    type_ko = {"SEARCH": "검색", "DISPLAY": "디스플레이", "VIDEO": "동영상", "PERFORMANCE_MAX": "실적 최대화"}
+    # DEMAND_GEN은 구버전 API/구 캠페인에서 DISCOVERY로 내려오므로 같이 매핑
+    div_map = {
+        "SEARCH": "SA", "DISPLAY": "DA", "VIDEO": "VA",
+        "PERFORMANCE_MAX": "DA", "DEMAND_GEN": "DA", "DISCOVERY": "DA",
+    }
+    type_ko = {
+        "SEARCH": "검색", "DISPLAY": "디스플레이", "VIDEO": "동영상",
+        "PERFORMANCE_MAX": "실적 최대화",
+        "DEMAND_GEN": "디맨드젠 캠페인", "DISCOVERY": "디맨드젠 캠페인",
+    }
 
     # ✅ 하위 광고주 2개 모두 조회
     for cust_id in GOOGLE_CUSTOMER_IDS:
