@@ -111,7 +111,8 @@ NAVER_ACCOUNTS = _load_naver_accounts()
 # 캠페인별 브랜드검색 계약: (시작일, 종료일, 일별광고비 VAT포함)
 #  - 날짜는 ISO("YYYY-MM-DD"), None = 무제한(경계 없음)
 #  - 같은 서비스라도 계약 기간이 다르면 별도 캠페인으로 등록(네이버에 별도 캠페인명 존재)
-#  - 기존(구) 계약은 2026-06-20까지, 신규(2026) 계약은 2026-06-21~2026-09-18
+#  - 기존(구) 계약은 2026-06-20까지, 신규(2026) 계약은 2026-06-21~2026-12-31
+#    (신규 계약 2026-09-18 만료분은 동일 캠페인명/동일 단가로 연말까지 연장 계약)
 #  - 신규 계약 금액은 표기상 VAT 미포함(vat-) 이므로 ×1.1 하여 VAT포함으로 저장
 BS_CONTRACTS = {
     # ── 구 계약 (~2026-06-20), 금액은 이미 VAT 포함 ──
@@ -121,13 +122,13 @@ BS_CONTRACTS = {
     "풀필먼트_BS_MO": (None, "2026-06-20", Decimal("1980000") / Decimal("90")),
     "미니_BS_PC":     (None, "2026-06-20", Decimal("1980000") / Decimal("90")),
     "미니_BS_MO":     (None, "2026-06-20", Decimal("2640000") / Decimal("90")),
-    # ── 신규 계약 (2026-06-21 ~ 2026-09-18), 표기 VAT- → ×1.1 ──
-    "사방넷_BS_PC(2026)":   ("2026-06-21", "2026-09-18", Decimal("4200000") * Decimal("1.1") / Decimal("90")),
-    "사방넷_BS_MO(2026)":   ("2026-06-21", "2026-09-18", Decimal("2400000") * Decimal("1.1") / Decimal("90")),
-    "미니_BS_PC(2026)":     ("2026-06-21", "2026-09-18", Decimal("2100000") * Decimal("1.1") / Decimal("90")),
-    "미니_BS_MO(2026)":     ("2026-06-21", "2026-09-18", Decimal("2400000") * Decimal("1.1") / Decimal("90")),
-    "풀필먼트_BS_PC(2026)": ("2026-06-21", "2026-09-18", Decimal("2100000") * Decimal("1.1") / Decimal("90")),
-    "풀필먼트_BS_MO(2026)": ("2026-06-21", "2026-09-18", Decimal("2400000") * Decimal("1.1") / Decimal("90")),
+    # ── 신규 계약 (2026-06-21 ~ 2026-12-31, 연장), 표기 VAT- → ×1.1 ──
+    "사방넷_BS_PC(2026)":   ("2026-06-21", "2026-12-31", Decimal("4200000") * Decimal("1.1") / Decimal("90")),
+    "사방넷_BS_MO(2026)":   ("2026-06-21", "2026-12-31", Decimal("2400000") * Decimal("1.1") / Decimal("90")),
+    "미니_BS_PC(2026)":     ("2026-06-21", "2026-12-31", Decimal("2100000") * Decimal("1.1") / Decimal("90")),
+    "미니_BS_MO(2026)":     ("2026-06-21", "2026-12-31", Decimal("2400000") * Decimal("1.1") / Decimal("90")),
+    "풀필먼트_BS_PC(2026)": ("2026-06-21", "2026-12-31", Decimal("2100000") * Decimal("1.1") / Decimal("90")),
+    "풀필먼트_BS_MO(2026)": ("2026-06-21", "2026-12-31", Decimal("2400000") * Decimal("1.1") / Decimal("90")),
 }
 
 # 하위호환: 캠페인 → 일별광고비(기간 무시한 단순 단가 조회용)
@@ -1054,8 +1055,16 @@ def get_g_data(d_from, d_to, logs=None):
 
     rows = []
     d_map = {"DESKTOP": "PC", "MOBILE": "모바일", "TABLET": "모바일"}
-    div_map = {"SEARCH": "SA", "DISPLAY": "DA", "VIDEO": "VA", "PERFORMANCE_MAX": "DA"}
-    type_ko = {"SEARCH": "검색", "DISPLAY": "디스플레이", "VIDEO": "동영상", "PERFORMANCE_MAX": "실적 최대화"}
+    # DEMAND_GEN은 구버전 API/구 캠페인에서 DISCOVERY로 내려오므로 같이 매핑
+    div_map = {
+        "SEARCH": "SA", "DISPLAY": "DA", "VIDEO": "VA",
+        "PERFORMANCE_MAX": "DA", "DEMAND_GEN": "DA", "DISCOVERY": "DA",
+    }
+    type_ko = {
+        "SEARCH": "검색", "DISPLAY": "디스플레이", "VIDEO": "동영상",
+        "PERFORMANCE_MAX": "실적 최대화",
+        "DEMAND_GEN": "디맨드젠 캠페인", "DISCOVERY": "디맨드젠 캠페인",
+    }
 
     # ✅ 하위 광고주 2개 모두 조회
     for cust_id in GOOGLE_CUSTOMER_IDS:
