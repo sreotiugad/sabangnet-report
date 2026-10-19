@@ -114,6 +114,7 @@ NAVER_ACCOUNTS = _load_naver_accounts()
 #  - 기존(구) 계약은 2026-06-20까지, 신규(2026) 계약은 2026-06-21~2026-12-31
 #    (신규 계약 2026-09-18 만료분은 동일 캠페인명/동일 단가로 연말까지 연장 계약)
 #  - 신규 계약 금액은 표기상 VAT 미포함(vat-) 이므로 ×1.1 하여 VAT포함으로 저장
+#  - 와이즈트래커는 2차 프로모션 계약(라이트형)으로 2026-10-17부터 90일간 별도 단가 적용
 BS_CONTRACTS = {
     # ── 구 계약 (~2026-06-20), 금액은 이미 VAT 포함 ──
     "사방넷_BS_MO":   (None, "2026-06-20", Decimal("2640000") / Decimal("90")),
@@ -129,6 +130,9 @@ BS_CONTRACTS = {
     "미니_BS_MO(2026)":     ("2026-06-21", "2026-12-31", Decimal("2400000") * Decimal("1.1") / Decimal("90")),
     "풀필먼트_BS_PC(2026)": ("2026-06-21", "2026-12-31", Decimal("2100000") * Decimal("1.1") / Decimal("90")),
     "풀필먼트_BS_MO(2026)": ("2026-06-21", "2026-12-31", Decimal("2400000") * Decimal("1.1") / Decimal("90")),
+    # ── 와이즈트래커 2차 프로모션 (2026-10-17 ~ 2027-01-14, 90일 기준), 표기 VAT- → ×1.1 ──
+    "와이즈트래커_BS_PC(2026)": ("2026-10-17", "2027-01-14", Decimal("2550000") * Decimal("1.1") / Decimal("90")),
+    "와이즈트래커_BS_MO(2026)": ("2026-10-17", "2027-01-14", Decimal("2700000") * Decimal("1.1") / Decimal("90")),
 }
 
 # 하위호환: 캠페인 → 일별광고비(기간 무시한 단순 단가 조회용)
@@ -176,11 +180,12 @@ def assign_service_from_campaign(campaign_series: pd.Series) -> pd.Series:
     s = campaign_series.astype(str)
     return np.select(
         [
+            s.str.contains("와이즈트래커", na=False),
             s.str.contains("풀필먼트", na=False),
             s.str.contains("미니", na=False),
             s.str.contains("사방넷", na=False),
         ],
-        ["풀필먼트", "사방넷미니", "사방넷"],
+        ["와이즈트래커", "풀필먼트", "사방넷미니", "사방넷"],
         default=""
     )
 
@@ -2254,7 +2259,7 @@ def _build_summary_for_ai(df_all: pd.DataFrame, compare_mode: str) -> dict:
     m["abs_conv_delta"] = m["conv_diff"].abs()
 
     top = m.sort_values(["abs_spend_delta", "abs_conv_delta"], ascending=False).head(6)
-    service_order = {"사방넷": 0, "사방넷미니": 1, "풀필먼트": 2}
+    service_order = {"사방넷": 0, "사방넷미니": 1, "풀필먼트": 2, "와이즈트래커": 3}
     top["_svc_order"] = top["서비스"].map(lambda x: service_order.get(str(x).strip(), 99))
     top = top.sort_values(["_svc_order", "abs_spend_delta", "abs_conv_delta"], ascending=[True, False, False])
 
@@ -2362,7 +2367,7 @@ def generate_daily_comment_from_excel(excel_path: str, platform: str, compare_mo
 - 광고비 감소 시 증감액 표기는 만원 단위까지만 가능하면 증감액 표기는 생략
 - 하위 설명 'ㄴ'은 반드시 본문과 줄바꿈하여 별도 줄에 작성하며 들여쓰기 유지
 - '전체' 또는 '전체 이슈' 문장 작성 금지
-- 이슈는 항상 '사방넷'으로 시작 2번은 '사방넷미니' 3번은 '풀필먼트' 우선
+- 이슈는 항상 '사방넷'으로 시작 2번은 '사방넷미니' 3번은 '풀필먼트' 4번은 '와이즈트래커' 우선
 - summary.issues에 있는 항목을 빠짐없이 전부 작성 (최대 6개, 임의로 줄이지 말 것)
 - 단, '풀필먼트'는 conv_diff > 0 인 경우에만 포함, 전환 없으면 작성 금지
 ㄴ 줄에는 성과 비교 문장 작성 금지
@@ -2661,7 +2666,7 @@ def render_daily_dashboard(df: pd.DataFrame, df_prev=None, d1=None, d2=None):
         st.warning("서비스 또는 캠페인유형 컬럼이 없습니다.")
         return
 
-    SVC_COLORS = {"사방넷":"#db2777","사방넷미니":"#0891b2","풀필먼트":"#059669"}
+    SVC_COLORS = {"사방넷":"#db2777","사방넷미니":"#0891b2","풀필먼트":"#059669","와이즈트래커":"#7c3aed"}
     MEDIA_BADGE = {
         "네이버":'<span class="badge-n">네이버</span>',
         "구글":  '<span class="badge-g">구글</span>',
@@ -2673,7 +2678,7 @@ def render_daily_dashboard(df: pd.DataFrame, df_prev=None, d1=None, d2=None):
         "ADN":   '<span class="badge-nas">ADN</span>',
     }
 
-    services_order = ["사방넷","사방넷미니","풀필먼트"]
+    services_order = ["사방넷","사방넷미니","풀필먼트","와이즈트래커"]
     services = [s for s in services_order if s in df["서비스"].unique()]
     extra = [s for s in df["서비스"].unique() if s not in services_order and str(s).strip() not in ("","nan","None")]
     services += extra
